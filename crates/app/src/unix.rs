@@ -3790,25 +3790,57 @@ pub fn set_dock_hidden(hidden: bool) -> bool {
     NSApplication::sharedApplication(main).setActivationPolicy(policy)
 }
 
-/// Focus the main window alone after an explicit status-item or toolbar action.
 #[cfg(target_os = "macos")]
-pub fn macos_show_main_window() -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
-    use objc2_foundation::NSString;
+pub fn macos_app_hidden() -> bool {
+    objc2::MainThreadMarker::new()
+        .is_some_and(|main| objc2_app_kit::NSApplication::sharedApplication(main).isHidden())
+}
 
-    let app = NSApplication::sharedApplication(MainThreadMarker::new()?);
-    let title = NSString::from_str(crate::MAIN_TITLE);
-    let window = app
-        .windows()
-        .iter()
-        .find(|window| window.title() == title)?;
-    if !app.isActive() || !window.isKeyWindow() || !window.isVisible() {
+#[cfg(target_os = "macos")]
+fn macos_main_window(
+    app: &objc2_app_kit::NSApplication,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    let title = objc2_foundation::NSString::from_str(crate::MAIN_TITLE);
+    app.windows().iter().find(|window| window.title() == title)
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_only_main_window_visible() -> bool {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(main);
+    let title = objc2_foundation::NSString::from_str(crate::MAIN_TITLE);
+    let windows = app.windows();
+    let mut visible = windows.iter().filter(|w| {
+        w.isVisible()
+            && w.styleMask()
+                .contains(objc2_app_kit::NSWindowStyleMask::Titled)
+    });
+    visible.next().is_some_and(|w| w.title() == title) && visible.next().is_none()
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_hide_app() {
+    if let Some(main) = objc2::MainThreadMarker::new() {
+        objc2_app_kit::NSApplication::sharedApplication(main).hide(None);
+    }
+}
+
+/// Restore focus after switching back to a regular application with a system menu.
+#[cfg(target_os = "macos")]
+pub fn macos_show_main_window() {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(main);
+    if let Some(window) = macos_main_window(&app)
+        && (!app.isActive() || !window.isKeyWindow() || !window.isVisible() || app.isHidden())
+    {
         macos_activate_app();
         window.makeKeyAndOrderFront(None);
         window.orderFrontRegardless();
     }
-    Some(window)
 }
 
 /// macOS: whether `NSApplication.sharedApplication` is currently the active foreground app with a

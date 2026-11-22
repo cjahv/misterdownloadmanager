@@ -472,6 +472,8 @@ pub(crate) enum Cmd {
     /// Tasks → Show drop target (shown / hidden); the drop target's Show main window.
     ToggleDropTarget,
     ShowMain,
+    #[cfg(target_os = "macos")]
+    HideApplication,
     /// Tasks → Export / Import (D-021): IDM's export file (.ef2) or a text file.
     Export {
         ef2: bool,
@@ -1554,8 +1556,6 @@ pub struct App {
     /// The policy AppKit actually accepted, independent of the saved preference.
     #[cfg(target_os = "macos")]
     dock_hidden: bool,
-    #[cfg(target_os = "macos")]
-    pub(crate) toolbar_menu_at: Option<egui::Pos2>,
     /// Linux: the icon being made beside the window (#828: its library waits for the session
     /// bus); `tray` once it is.
     #[cfg(target_os = "linux")]
@@ -2285,8 +2285,6 @@ impl App {
             tray: None,
             #[cfg(target_os = "macos")]
             dock_hidden: false,
-            #[cfg(target_os = "macos")]
-            toolbar_menu_at: None,
             #[cfg(target_os = "linux")]
             tray_setup: None,
             tray_limiter: None,
@@ -4756,17 +4754,39 @@ impl App {
         self.trim_when_hidden = Some(Instant::now() + next_trim(0));
     }
 
+    #[cfg(target_os = "macos")]
+    fn can_hide_dock(&self) -> bool {
+        self.settings.hide_dock_icon
+            && self
+                .tray
+                .as_ref()
+                .is_some_and(|tray| tray.icon() == crate::tray::Icon::There)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_dock_visibility(&mut self, hide: bool) {
+        if self.dock_hidden != hide && crate::unix::set_dock_hidden(hide) {
+            self.dock_hidden = hide;
+        }
+    }
+
     /// The window back from the tray (or from minimized), in front.
     fn show_window(&mut self, ctx: &egui::Context) {
         // Asked for (a second launch, the tray icon): no start with the session or browser to settle.
         self.tray_wait = None;
         self.trim_when_hidden = None;
         self.hidden = false;
+        #[cfg(target_os = "macos")]
+        self.apply_dock_visibility(false);
         // The freeze watchdog: from here a stall is seen (no longer the computer's, #1126).
         crate::crash::hidden(false);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         if !crate::offscreen() {
+            #[cfg(target_os = "macos")]
+            if self.settings.hide_dock_icon {
+                crate::unix::macos_show_main_window();
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         ctx.request_repaint();
@@ -4924,20 +4944,8 @@ impl App {
         }
         #[cfg(target_os = "macos")]
         {
-            let hide = self.settings.hide_dock_icon
-                && self
-                    .tray
-                    .as_ref()
-                    .is_some_and(|tray| tray.icon() == crate::tray::Icon::There);
-            if hide != self.dock_hidden && crate::unix::set_dock_hidden(hide) {
-                self.dock_hidden = hide;
-                self.toolbar_menu_at = None;
-                self.open_menu = None;
-                if self.bar_keys {
-                    self.give_keys(Pane::Toolbar);
-                }
-                ctx.request_repaint();
-            }
+            let hide = self.can_hide_dock() && (self.hidden || crate::unix::macos_app_hidden());
+            self.apply_dock_visibility(hide);
         }
         if !crate::offscreen() {
             let spec = self
@@ -5024,17 +5032,12 @@ impl App {
             tracing::info!("tray: {c:?}");
             let cmd = match c {
                 #[cfg(target_os = "macos")]
-                TrayCmd::Toggle if self.dock_hidden => {
+                TrayCmd::Toggle if self.settings.hide_dock_icon => {
                     self.show_window(ctx);
-                    crate::unix::macos_show_main_window();
                     continue;
                 }
                 TrayCmd::Show => {
                     self.show_window(ctx);
-                    #[cfg(target_os = "macos")]
-                    if self.dock_hidden {
-                        crate::unix::macos_show_main_window();
-                    }
                     continue;
                 }
                 TrayCmd::Toggle => {
@@ -8632,6 +8635,15 @@ impl App {
                 self.settings.drop_target = !self.settings.drop_target;
                 self.dirty = true;
             }
+            #[cfg(target_os = "macos")]
+            Cmd::HideApplication => {
+                if self.can_hide_dock() && crate::unix::macos_only_main_window_visible() {
+                    self.hide_to_tray(ctx);
+                    ctx.request_repaint();
+                } else {
+                    crate::unix::macos_hide_app();
+                }
+            }
             Cmd::ShowMain => self.show_window(ctx),
             Cmd::Export { ef2 } => self.export(ef2),
             Cmd::Import { ef2 } => self.import(ef2),
@@ -10583,7 +10595,7 @@ impl App {
                 };
                 let pane = tab_to(from, self.show_categories, back);
                 #[cfg(target_os = "macos")]
-                let pane = if pane == Pane::Bar && !self.dock_hidden {
+                let pane = if pane == Pane::Bar {
                     tab_to(Some(Pane::Bar), self.show_categories, back)
                 } else {
                     pane
@@ -10636,17 +10648,7 @@ impl App {
         ];
         let tb: Vec<(Icon, &str, bool)> = buttons.iter().map(|(i, l, e, _)| (*i, *l, *e)).collect();
         let tb_keys = (self.toolbar_keys && free).then_some(self.toolbar_at);
-        #[cfg(target_os = "macos")]
-        let menu_width = if self.dock_hidden { 44.0 } else { 0.0 };
-        #[cfg(not(target_os = "macos"))]
-        let menu_width = 0.0;
-        match chrome::toolbar(
-            ui,
-            o + egui::vec2(menu_width, 0.0),
-            w - menu_width,
-            &tb,
-            tb_keys,
-        ) {
+        match chrome::toolbar(ui, o, w, &tb, tb_keys) {
             Some(ToolbarEvent::Click(k)) => chosen = Some((buttons[k].3, None)),
             Some(ToolbarEvent::Drop(k, at)) => {
                 let kind = match buttons[k].0 {
@@ -10662,14 +10664,6 @@ impl App {
             None => {}
         }
 
-        #[cfg(target_os = "macos")]
-        if self.dock_hidden {
-            let (focus, anchor) = chrome::mac_toolbar_menu(ui, o, self.bar_keys, free);
-            if focus {
-                self.give_keys(Pane::Bar);
-            }
-            self.toolbar_menu_at = anchor;
-        }
         // Categories pane.
         let list_left = if self.show_categories {
             let rows = self.tree_rows();

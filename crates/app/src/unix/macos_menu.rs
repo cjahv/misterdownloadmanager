@@ -9,7 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSMenu, NSMenuDelegate, NSMenuItem};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,7 +19,6 @@ pub struct State {
     ctx: egui::Context,
     send: Sender<Cmd>,
     section: Option<usize>,
-    system: bool,
     commands: RefCell<Vec<Cmd>>,
     previous: RefCell<Option<(&'static str, Vec<MenuEntry<Cmd>>)>>,
 }
@@ -106,7 +105,7 @@ impl Handler {
                     divider = menu.numberOfItems() > 0;
                     continue;
                 }
-                MenuEntry::Item(_, Cmd::Exit | Cmd::Options, ..) if self.ivars().system => continue,
+                MenuEntry::Item(_, Cmd::Exit | Cmd::Options, ..) => continue,
                 MenuEntry::Item(label, cmd, enabled, checked)
                 | MenuEntry::Radio(label, cmd, enabled, checked) => {
                     let text = chrome::mac_caption(i18n::tc("menu", label));
@@ -167,18 +166,12 @@ impl MacMenu {
         }
     }
 
-    fn handler(
-        &self,
-        mtm: MainThreadMarker,
-        section: Option<usize>,
-        system: bool,
-    ) -> Retained<Handler> {
+    fn handler(&self, mtm: MainThreadMarker, section: Option<usize>) -> Retained<Handler> {
         let this = Handler::alloc(mtm).set_ivars(State {
             app: self.app.clone(),
             ctx: self.ctx.clone(),
             send: self.send.clone(),
             section,
-            system,
             commands: Default::default(),
             previous: Default::default(),
         });
@@ -191,10 +184,9 @@ impl MacMenu {
         mtm: MainThreadMarker,
         index: usize,
         label: &str,
-        system: bool,
     ) -> (Retained<NSMenuItem>, Retained<Handler>) {
         let (item, sub) = submenu(mtm, &chrome::mac_caption(i18n::tc("menubar", label)));
-        let handler = self.handler(mtm, Some(index), system);
+        let handler = self.handler(mtm, Some(index));
         sub.setDelegate(Some(ProtocolObject::from_ref(&*handler)));
         // An empty submenu is disabled by AppKit before it asks its delegate for updates.
         handler.refresh(&sub);
@@ -212,13 +204,29 @@ impl MacMenu {
             let Some(application) = bar.itemAtIndex(0).and_then(|i| i.submenu()) else {
                 return;
             };
-            let handler = self.handler(mtm, None, true);
+            let handler = self.handler(mtm, None);
+            // Keep the system's Hide label and shortcut. With one main window the command
+            // can use the same background transition as closing into the status item.
+            if let Some(hide) = application
+                .itemArray()
+                .iter()
+                .find(|i| i.action() == Some(sel!(hide:)))
+            {
+                let mut commands = handler.ivars().commands.borrow_mut();
+                hide.setTag(commands.len() as isize);
+                commands.push(Cmd::HideApplication);
+                // SAFETY: this handler implements mdmChoose: and lives with the menu.
+                unsafe {
+                    hide.setAction(Some(sel!(mdmChoose:)));
+                    hide.setTarget(Some(&*handler));
+                }
+            }
             let settings = handler.item(i18n::t("Settings..."), ",", Cmd::Options);
             application.insertItem_atIndex(&settings, 1.min(application.numberOfItems()));
             self.settings = Some(settings);
             self.handlers.push(handler);
             for (i, source) in chrome::bar_titles().into_iter().enumerate() {
-                let (item, handler) = self.section(mtm, i, source, true);
+                let (item, handler) = self.section(mtm, i, source);
                 bar.addItem(&item);
                 self.titles.push(item);
                 self.handlers.push(handler);
@@ -241,33 +249,5 @@ impl MacMenu {
             app.borrow_mut().run(cmd, None, &self.ctx);
             self.ctx.request_ui_pass(egui::ViewportId::ROOT);
         }
-    }
-
-    pub(crate) fn toolbar_popup(&self, at: egui::Pos2) {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let Some(view) = super::macos_show_main_window().and_then(|w| w.contentView()) else {
-            return;
-        };
-        let root = NSMenu::new(mtm);
-        let mut handlers = Vec::new();
-        for (i, title) in chrome::bar_titles().into_iter().enumerate() {
-            let (item, handler) = self.section(mtm, i, title, false);
-            root.addItem(&item);
-            handlers.push(handler);
-        }
-        let zoom = f64::from(self.ctx.zoom_factor());
-        let y = f64::from(at.y) * zoom;
-        let y = if view.isFlipped() {
-            y
-        } else {
-            view.bounds().size.height - y
-        };
-        root.popUpMenuPositioningItem_atLocation_inView(
-            None,
-            NSPoint::new(f64::from(at.x) * zoom, y),
-            Some(&view),
-        );
     }
 }

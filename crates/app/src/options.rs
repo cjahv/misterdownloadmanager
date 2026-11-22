@@ -523,7 +523,7 @@ impl OptionsDialog {
             (
                 133.0,
                 &mut s.hide_dock_icon,
-                crate::i18n::mark("Hide Dock icon"),
+                crate::i18n::mark("Hide Dock icon when window is hidden"),
             ),
             #[cfg(not(target_os = "macos"))]
             (

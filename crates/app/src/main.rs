@@ -668,13 +668,6 @@ impl eframe::App for Shared {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         eframe::App::ui(&mut *self.app.borrow_mut(), ui, frame);
-        #[cfg(target_os = "macos")]
-        {
-            let at = self.app.borrow_mut().toolbar_menu_at.take();
-            if let Some(at) = at {
-                self.menu.toolbar_popup(at);
-            }
-        }
     }
 }
 

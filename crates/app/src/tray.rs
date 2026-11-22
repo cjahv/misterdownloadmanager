@@ -8,6 +8,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 mod beside;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(not(target_os = "macos"))]
 mod picture;
 mod watch;
@@ -20,6 +22,7 @@ pub use watch::Icon;
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
+#[cfg(not(target_os = "macos"))]
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// What the tray asks the app to do.
@@ -131,7 +134,10 @@ struct Native {
     /// The icon itself, kept for as long as the tray (Windows asks and tells the shell about it
     /// from the watcher's thread, through its hidden window).
     #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(not(target_os = "macos"))]
     tray: TrayIcon,
+    #[cfg(target_os = "macos")]
+    tray: macos::StatusItem,
     /// "Downloads in progress": one entry per running download, rebuilt when they change.
     downloads: Submenu,
     download_ids: Arc<Mutex<Vec<(MenuId, u64)>>>,
@@ -402,11 +408,7 @@ impl Native {
         #[cfg(target_os = "macos")]
         {
             // MDM_TEST_TRAY_RECT=0: the menu bar gives the item no place.
-            let placed = self
-                .tray
-                .ns_status_item()
-                .is_some_and(|item| item.isVisible())
-                && self.tray.rect().is_some()
+            let placed = self.tray.placed()
                 && std::env::var_os("MDM_TEST_TRAY_RECT").is_none_or(|v| v != "0");
             if self.answer.replace(Some(placed)) != Some(placed) {
                 tracing::info!("tray icon: placed {placed}");
@@ -506,35 +508,33 @@ impl Native {
         let px = fitted.1;
         #[cfg(not(any(windows, target_os = "macos")))]
         let px = picture::STATUS_NOTIFIER_PX;
-        #[cfg(not(target_os = "macos"))]
-        let icon = picture(px);
         #[cfg(target_os = "macos")]
-        let icon = menu_bar_icon();
-        let icon = match icon {
-            Ok(icon) => icon,
-            Err(e) => {
-                tracing::warn!("tray icon: no picture: {e}");
-                return None;
-            }
-        };
-        let builder = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false)
-            .with_tooltip(crate::MAIN_TITLE);
-        #[cfg(target_os = "macos")]
-        let builder = builder.with_icon_templated(icon);
+        let tray = macos::StatusItem::new(menu, tx.clone(), ctx)?;
         #[cfg(not(target_os = "macos"))]
-        let builder = builder.with_icon(icon);
-        // Linux and the BSDs (StatusNotifierItem): the item's title is its name in the shell's
-        // lists, KDE's notification area among them, which showed MDM's icon with no name (#1305).
-        // Not on macOS, where a title is text beside the icon in the menu bar; Windows has none.
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let builder = builder.with_title(crate::MAIN_TITLE);
-        let tray = match builder.build() {
-            Ok(tray) => tray,
-            Err(e) => {
-                tracing::warn!("tray icon: not made: {e}");
-                return None;
+        let tray = {
+            let icon = match picture(px) {
+                Ok(icon) => icon,
+                Err(e) => {
+                    tracing::warn!("tray icon: no picture: {e}");
+                    return None;
+                }
+            };
+            let builder = TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_menu_on_left_click(false)
+                .with_tooltip(crate::MAIN_TITLE);
+            let builder = builder.with_icon(icon);
+            // Linux and the BSDs (StatusNotifierItem): the item's title is its name in the shell's
+            // lists, KDE's notification area among them, which showed MDM's icon with no name (#1305).
+            // Not on macOS, where a title is text beside the icon in the menu bar; Windows has none.
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let builder = builder.with_title(crate::MAIN_TITLE);
+            match builder.build() {
+                Ok(tray) => tray,
+                Err(e) => {
+                    tracing::warn!("tray icon: not made: {e}");
+                    return None;
+                }
             }
         };
 
@@ -557,21 +557,24 @@ impl Native {
         };
 
         let wake = |tx: &Sender<TrayCmd>, ctx: &egui::Context| (tx.clone(), ctx.clone());
-        let (icon_tx, icon_ctx) = wake(&tx, ctx);
-        TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = e
-            {
-                // The window is asked for: a stall from now on is felt (crash.rs, #1126). Seen
-                // during one where the icon's events come on a thread of their own (Linux).
-                crate::crash::asked();
-                let _ = icon_tx.send(TrayCmd::Toggle);
-                icon_ctx.request_repaint();
-            }
-        }));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (icon_tx, icon_ctx) = wake(&tx, ctx);
+            TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = e
+                {
+                    // The window is asked for: a stall from now on is felt (crash.rs, #1126). Seen
+                    // during one where the icon's events come on a thread of their own (Linux).
+                    crate::crash::asked();
+                    let _ = icon_tx.send(TrayCmd::Toggle);
+                    icon_ctx.request_repaint();
+                }
+            }));
+        }
         let (menu_tx, menu_ctx) = wake(&tx, ctx);
         let download_ids: Arc<Mutex<Vec<(MenuId, u64)>>> = Arc::default();
         let ids = download_ids.clone();
@@ -646,7 +649,10 @@ impl Native {
             // tip's text, so the tip's own first line, the name again, is left out (#1305).
             #[cfg(not(target_os = "macos"))]
             let tip = without_name(tip);
+            #[cfg(not(target_os = "macos"))]
             let _ = self.tray.set_tooltip(Some(tip));
+            #[cfg(target_os = "macos")]
+            self.tray.set_tooltip(tip);
             true
         }
     }
@@ -765,17 +771,6 @@ fn short(name: &str) -> String {
         s.push('…');
     }
     s.replace('&', "&&")
-}
-
-/// AppKit paints the mask for the status button's effective appearance, including selection.
-#[cfg(target_os = "macos")]
-fn menu_bar_icon() -> Result<tray_icon::Icon, String> {
-    let png = include_bytes!("../assets/icons/app/menu-bar-template.png");
-    let mask = image::load_from_memory_with_format(png, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    let (width, height) = mask.dimensions();
-    tray_icon::Icon::from_rgba(mask.into_raw(), width, height).map_err(|e| e.to_string())
 }
 
 /// The hand-made picture nearest the shell's icon size (#1161).

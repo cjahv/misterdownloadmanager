@@ -2256,7 +2256,7 @@
 #, machine
 	Hibernate	休眠
 #. general options checkbox on macOS
-	Hide Dock icon	隱藏 Dock 圖像
+	Hide Dock icon when window is hidden	主視窗隱藏時隱藏 Dock 圖像
 #. message or event log entry in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 #, machine
@@ -2818,7 +2818,6 @@
 #. message or event log entry in the main window
 #, machine
 	Main download queue	主要下載佇列
-	Main menu	主選單
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Make everything larger / smaller (View → Interface size)	將所有項目放大/縮小 (檢視 → 介面大小)

@@ -311,7 +311,7 @@ pub struct Settings {
     /// closing quits). On by default, for existing lists too, in every copy. Only where a tray
     /// shows MDM's icon.
     pub close_to_tray: bool,
-    /// On macOS, keep only the menu bar item while it is available.
+    /// On macOS, hide the Dock tile while the main window is hidden and the status item is available.
     pub hide_dock_icon: bool,
     /// General: a private (incognito) window's downloads are written to the saved list like any
     /// other, so they survive MDM closing or restarting (their cookies stay in memory, as every

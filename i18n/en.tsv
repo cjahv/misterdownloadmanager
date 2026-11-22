@@ -1706,7 +1706,7 @@
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 	Hide &categories	Hide &categories
 #. text in the Options window
-	Hide Dock icon	Hide Dock icon
+	Hide Dock icon when window is hidden	Hide Dock icon when window is hidden
 #. button in a download's progress window
 	Hide tab	Hide tab
 #. text in a download's progress window; text in standard windows
@@ -2121,8 +2121,6 @@
 	Magnet link	Magnet link
 #. message or event log entry in the main window
 	Main download queue	Main download queue
-#. text in the main window (menus, toolbar, Categories pane)
-	Main menu	Main menu
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 	Make everything larger / smaller (View → Interface size)	Make everything larger / smaller (View → Interface size)
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
