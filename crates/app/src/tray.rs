@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 mod beside;
+#[cfg(not(target_os = "macos"))]
 mod picture;
 mod watch;
 
@@ -499,9 +500,13 @@ impl Native {
         let fitted = crate::win32::tray_icon_px();
         #[cfg(windows)]
         let px = fitted.1;
-        #[cfg(not(windows))]
-        let px = picture::fitting();
-        let icon = match picture(px) {
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let px = picture::STATUS_NOTIFIER_PX;
+        #[cfg(not(target_os = "macos"))]
+        let icon = picture(px);
+        #[cfg(target_os = "macos")]
+        let icon = menu_bar_icon();
+        let icon = match icon {
             Ok(icon) => icon,
             Err(e) => {
                 tracing::warn!("tray icon: no picture: {e}");
@@ -511,8 +516,11 @@ impl Native {
         let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .with_tooltip(crate::MAIN_TITLE)
-            .with_icon(icon);
+            .with_tooltip(crate::MAIN_TITLE);
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(icon);
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(icon);
         // Linux and the BSDs (StatusNotifierItem): the item's title is its name in the shell's
         // lists, KDE's notification area among them, which showed MDM's icon with no name (#1305).
         // Not on macOS, where a title is text beside the icon in the menu bar; Windows has none.
@@ -755,10 +763,19 @@ fn short(name: &str) -> String {
     s.replace('&', "&&")
 }
 
-/// The icon's picture at `px` px: the app icon's hand-made picture of the size the system draws
-/// it at ([`picture`], #1161). Never an empty one: tray-icon takes a 0×0 picture, and macOS then
-/// fails to make the menu bar item of it (it encodes the picture as a PNG, which can't be 0 wide),
-/// so before #529 macOS had no menu bar icon and closing the window quit.
+/// AppKit paints the mask for the status button's effective appearance, including selection.
+#[cfg(target_os = "macos")]
+fn menu_bar_icon() -> Result<tray_icon::Icon, String> {
+    let png = include_bytes!("../assets/icons/app/menu-bar-template.png");
+    let mask = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    let (width, height) = mask.dimensions();
+    tray_icon::Icon::from_rgba(mask.into_raw(), width, height).map_err(|e| e.to_string())
+}
+
+/// The hand-made picture nearest the shell's icon size (#1161).
+#[cfg(not(target_os = "macos"))]
 fn picture(px: u32) -> Result<tray_icon::Icon, String> {
     let p = picture::at(px)?;
     if p.size == 0 || p.rgba.len() != (p.size * p.size * 4) as usize {
@@ -899,6 +916,7 @@ mod tests {
     /// the window icon, `app_icon`, is empty on purpose), at every size it is drawn at (#1161).
     #[test]
     fn the_tray_picture_is_never_empty() {
+        #[cfg(not(target_os = "macos"))]
         for px in [16, 20, 24, 28, 32, 40, 44, 48, 256] {
             let p = picture::at(px).unwrap();
             assert_eq!(p.rgba.len(), (px * px * 4) as usize);
@@ -908,6 +926,8 @@ mod tests {
             );
             assert!(picture(px).is_ok(), "{px} px");
         }
+        #[cfg(target_os = "macos")]
+        assert!(menu_bar_icon().is_ok());
         #[cfg(target_os = "macos")]
         assert_eq!(
             crate::app_icon().width,

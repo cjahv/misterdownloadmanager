@@ -9,8 +9,6 @@
 //!   16 px at 100 %, 20 at 125 %, 24 at 150 %, 28 at 175 %, 32 at 200 % (`win32::tray_icon_px`).
 //!   It is asked again as the shell is (`watch`), and the icon drawn again when the scale changes
 //!   or Explorer starts again.
-//! - macOS: 44 px, the menu bar's 22 points (tray-icon's icon height) at 2× (Retina); a 1×
-//!   screen halves it.
 //! - Linux: 32 px. StatusNotifierItem hosts scale the one picture they are given to their size
 //!   (GNOME's AppIndicator extension 16 px a scale, KDE 22): the small design, at most a third
 //!   down at 1×.
@@ -48,12 +46,9 @@ pub fn small_icon_px(dpi: u32) -> u32 {
     (16 * dpi.max(1) + 48) / 96
 }
 
-/// The size the tray icon is drawn at on macOS and Linux (module comment; Windows asks the
-/// taskbar: `win32::tray_icon_px`).
+/// Size supplied to StatusNotifierItem hosts, which scale the picture for their panel.
 #[cfg(not(windows))]
-pub fn fitting() -> u32 {
-    if cfg!(target_os = "macos") { 44 } else { 32 }
-}
+pub const STATUS_NOTIFIER_PX: u32 = 32;
 
 /// A square RGBA picture.
 pub struct Picture {
@@ -180,7 +175,7 @@ mod tests {
         #[cfg(windows)]
         let px = crate::win32::tray_icon_px().1;
         #[cfg(not(windows))]
-        let px = fitting();
+        let px = STATUS_NOTIFIER_PX;
         assert!((16..=64).contains(&px), "{px}");
         assert!(source(px) <= 64, "{px}");
     }

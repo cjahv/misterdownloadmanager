@@ -9,7 +9,7 @@
 # (MDM_MACOS_IDENTITY="Developer ID Application: ..."), it is an ordinary extension.
 # MDM_NOTARY_PROFILE=<name> (a `xcrun notarytool store-credentials` profile) also has Apple notarize
 # the app and the .dmg: Safari ignores a Developer ID extension that isn't.
-# Needs: macOS with Xcode's command line tools (swiftc), rustup, pwsh (the extension).
+# Needs: macOS with Xcode 26 or later (actool, swiftc), rustup, pwsh (the extension).
 #   tools/installer/build-macos.sh [--no-build]
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -40,15 +40,10 @@ stage="$dist/stage-macos"
 rm -rf "$stage"
 mkdir -p "$stage"
 
-# The icon: every size macOS asks for, from the 1254 px artwork.
-set_dir="$stage/AppIcon.iconset"
-mkdir -p "$set_dir"
-for s in 16 32 128 256 512; do
-  sips -z "$s" "$s" "$root/art/Mister Download Manager.png" --out "$set_dir/icon_${s}x${s}.png" >/dev/null
-  d=$((s * 2))
-  sips -z "$d" "$d" "$root/art/Mister Download Manager.png" --out "$set_dir/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$set_dir" -o "$stage/AppIcon.icns"
+# Compile once for both architectures. actool also renders the legacy macOS icon.
+xcrun actool "$root/art/macos/AppIcon.icon" --compile "$stage" --app-icon AppIcon \
+  --platform macosx --target-device mac --minimum-deployment-target 11.0 \
+  --output-partial-info-plist "$stage/icon.plist"
 
 dmgs=()
 for pair in "${targets[@]}"; do
@@ -75,7 +70,7 @@ for pair in "${targets[@]}"; do
   done
   cp -r "$root/target/extension/chromium" "$app/Contents/Resources/extension-chromium"
   cp "$root/target/extension/mdm-firefox.xpi" "$root/LICENSE" "$root/ATTRIBUTION.md" "$app/Contents/Resources/"
-  cp "$stage/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+  cp "$stage/AppIcon.icns" "$stage/Assets.car" "$app/Contents/Resources/"
 
   cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -89,7 +84,6 @@ for pair in "${targets[@]}"; do
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>misterdownloadmanager</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <!-- MDM opens .torrent files and magnet links (#698): Finder offers it for them, and hands
@@ -128,6 +122,7 @@ for pair in "${targets[@]}"; do
 </dict>
 </plist>
 EOF
+  /usr/libexec/PlistBuddy -c "Merge '$stage/icon.plist'" "$app/Contents/Info.plist"
   plutil -lint "$app/Contents/Info.plist"
   # The Safari extension (it carries its own copy of the helper, signed for its sandbox).
   "$root/tools/safari/build-appex.sh" "$app" "$arch-apple-macos14.0" "$root/target/extension/safari" \
