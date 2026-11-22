@@ -69,7 +69,9 @@ fn mac_symbol(name: &str, px: u32) -> Option<egui::ColorImage> {
     };
     Some(egui::ColorImage::new(
         [side as usize; 2],
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| egui::Color32::from_white_alpha(pixel[3]))
             .collect(),
     ))

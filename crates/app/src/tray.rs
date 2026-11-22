@@ -978,7 +978,12 @@ mod tests {
             assert!(picture(px).is_ok(), "{px} px");
         }
         #[cfg(target_os = "macos")]
-        assert!(menu_bar_icon().is_ok());
+        {
+            let image = image::load_from_memory(macos::TEMPLATE)
+                .unwrap()
+                .into_rgba8();
+            assert!(image.pixels().any(|pixel| pixel[3] > 0));
+        }
         #[cfg(target_os = "macos")]
         assert_eq!(
             crate::app_icon().width,

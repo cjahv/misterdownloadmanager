@@ -14,6 +14,14 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, Sender};
 
+type MenuSnapshot = (&'static str, Vec<MenuEntry<Cmd>>);
+
+pub(crate) struct PopupMenu {
+    pub at: egui::Pos2,
+    pub entries: Vec<MenuEntry<Cmd>>,
+    pub target: Option<u64>,
+}
+
 pub struct State {
     app: Weak<RefCell<App>>,
     ctx: egui::Context,
@@ -21,7 +29,7 @@ pub struct State {
     section: Option<usize>,
     target: Option<u64>,
     commands: RefCell<Vec<Cmd>>,
-    previous: RefCell<Option<(&'static str, Vec<MenuEntry<Cmd>>)>>,
+    previous: RefCell<Option<MenuSnapshot>>,
 }
 
 define_class!(
@@ -258,7 +266,11 @@ impl MacMenu {
         }
         // Release the application borrow before AppKit starts its tracking loop.
         let popup = app.borrow_mut().take_native_popup();
-        if let Some((at, entries, target)) = popup
+        if let Some(PopupMenu {
+            at,
+            entries,
+            target,
+        }) = popup
             && let Some(view) = super::macos_main_window(&ns).and_then(|w| w.contentView())
         {
             let handler = self.handler(mtm, None, target);

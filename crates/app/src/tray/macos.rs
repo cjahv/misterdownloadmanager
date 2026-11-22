@@ -2,6 +2,8 @@
 //! has no Dock tile. Its context menu shares the tray's existing commands and state.
 #![allow(unsafe_code)]
 
+pub(super) const TEMPLATE: &[u8] = include_bytes!("../../assets/icons/app/menu-bar-template.png");
+
 use super::{Menu, Sender, TrayCmd};
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -79,9 +81,7 @@ pub(super) struct StatusItem {
 impl StatusItem {
     pub(super) fn new(menu: Menu, tx: Sender<TrayCmd>, ctx: &egui::Context) -> Option<Self> {
         let mtm = MainThreadMarker::new()?;
-        let data = NSData::with_bytes(include_bytes!(
-            "../../assets/icons/app/menu-bar-template.png"
-        ));
+        let data = NSData::with_bytes(TEMPLATE);
         let image = NSImage::initWithData(mtm.alloc(), &data)?;
         image.setSize(NSSize::new(22.0, 22.0));
         image.setTemplate(true);

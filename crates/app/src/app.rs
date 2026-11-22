@@ -10385,13 +10385,17 @@ impl App {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn take_native_popup(&mut self) -> Option<(Pos2, Vec<MenuEntry<Cmd>>, Option<u64>)> {
+    pub(crate) fn take_native_popup(&mut self) -> Option<crate::unix::macos_menu::PopupMenu> {
         if self.popup.is_none() || !self.uses_native_popup() {
             return None;
         }
         let (kind, at, _) = self.popup.take()?;
         let (entries, target) = self.popup_entries(kind);
-        Some((at, entries, target))
+        Some(crate::unix::macos_menu::PopupMenu {
+            at,
+            entries,
+            target,
+        })
     }
 
     fn open_popup(&mut self, kind: Popup, at: Pos2) {
