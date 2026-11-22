@@ -375,11 +375,20 @@ impl OptionsDialog {
         if modal || self.page != 0 {
             self.recording_hotkey = false;
         }
+        let mac = crate::theme::mac_layout();
         let outcome = window(
             ctx,
             "options",
-            "Mister Download Manager Configuration",
-            [430.0, 506.0],
+            if mac {
+                crate::i18n::tc("extension", "Settings")
+            } else {
+                crate::i18n::mark("Mister Download Manager Configuration")
+            },
+            if mac {
+                [SETTINGS_SIDEBAR + 430.0, 480.0]
+            } else {
+                [430.0, 506.0]
+            },
             false,
             LIGHT_BG(),
             |ui, o| {
@@ -390,6 +399,11 @@ impl OptionsDialog {
                 if let Some(p) = tabs(ui, o, self.page).or(by_key) {
                     self.page = p;
                 }
+                let o = if mac {
+                    o + vec2(SETTINGS_SIDEBAR, -32.0)
+                } else {
+                    o
+                };
                 match self.page {
                     0 => self.general(ui, o),
                     1 => self.file_types(ui, o),
@@ -405,9 +419,22 @@ impl OptionsDialog {
                     8 => self.sounds(ui, o),
                     _ => self.regional(ui, o),
                 }
+                let cancel = mac
+                    && winui::button_light(
+                        ui,
+                        r(o, 249.0, 478.0, 78.0, 24.0),
+                        "Cancel",
+                        ButtonKind::Normal,
+                        false,
+                    )
+                    .clicked();
                 let ok = winui::button_light(
                     ui,
-                    r(o, 269.0, 477.0, 73.0, 21.0),
+                    if mac {
+                        r(o, 335.0, 478.0, 79.0, 24.0)
+                    } else {
+                        r(o, 269.0, 477.0, 73.0, 21.0)
+                    },
                     "OK",
                     ButtonKind::Default,
                     false,
@@ -415,7 +442,11 @@ impl OptionsDialog {
                 .clicked();
                 if winui::button_light(
                     ui,
-                    r(o, 350.0, 477.0, 73.0, 21.0),
+                    if mac {
+                        r(o, 16.0, 478.0, 72.0, 24.0)
+                    } else {
+                        r(o, 350.0, 477.0, 73.0, 21.0)
+                    },
                     // i18n: noun: button that opens the help
                     "Help",
                     ButtonKind::Normal,
@@ -427,7 +458,7 @@ impl OptionsDialog {
                 }
                 if modal {
                     Outcome::Open
-                } else if winui::escape_pressed(ui) {
+                } else if cancel || winui::escape_pressed(ui) {
                     Outcome::Closed
                 } else if ok || winui::enter_pressed(ui) {
                     Outcome::Done(())
@@ -5088,6 +5119,8 @@ fn tab_row(
 }
 
 /// The two-row tab strip and the page frame; returns the page clicked.
+const SETTINGS_SIDEBAR: f32 = 146.0;
+
 fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
     // (page, label, x0, x1, label x): the rows never move sideways, only swap front and back.
     // Remote (#141, ours) joins the first row, which is sized by its labels since.
@@ -5130,7 +5163,12 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
     ];
     let p = ui.painter().clone();
     let border = winui::HEADER_LINE();
-    let (g, pr) = (tab_row(&p, &G, false), tab_row(&p, &P, false));
+    let mac = crate::theme::mac_layout();
+    let (g, pr) = if mac {
+        (Vec::new(), Vec::new())
+    } else {
+        (tab_row(&p, &G, false), tab_row(&p, &P, false))
+    };
     let first_row = page < 5 || page == REMOTE_PAGE;
     let (front, back): (&[_], &[_]) = if first_row { (&g, &pr) } else { (&pr, &g) };
     let mut clicked = None;
@@ -5139,12 +5177,18 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
                    top: f32,
                    base: f32,
                    sel: bool| {
-        let (x0, x1) = if sel {
+        let (x0, x1) = if sel && !mac {
             (x0 - if x0 <= 8.0 { 2.0 } else { 1.0 }, x1 + 2.0)
         } else {
             (x0, x1)
         };
-        let bottom = if sel { 45.0 } else { top + 17.0 };
+        let bottom = if mac {
+            top + 25.0
+        } else if sel {
+            45.0
+        } else {
+            top + 17.0
+        };
         // From the leading edge: the first tab at the right in RTL.
         let rc = winui::rect(Rect::from_min_max(
             o + vec2(x0, top),
@@ -5169,15 +5213,29 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
             clicked = Some(i);
         }
         if sel {
-            winui::keep_keys(ui, &resp, true, false, false);
+            winui::keep_keys(ui, &resp, !mac, mac, false);
             if resp.has_focus() {
                 // Left / Right (mirrored in RTL), Home / End through the pages in order.
                 const ORDER: [usize; 12] = [0, 1, 2, 3, 4, 11, 5, 6, 7, 8, 9, 10];
                 let at = ORDER.iter().position(|p| *p == i).unwrap_or(0) as isize;
-                let fwd = if winui::rtl() { -1 } else { 1 };
-                let to = if winui::take_key(ui, egui::Key::ArrowRight) {
+                let fwd = if !mac && winui::rtl() { -1 } else { 1 };
+                let to = if winui::take_key(
+                    ui,
+                    if mac {
+                        egui::Key::ArrowDown
+                    } else {
+                        egui::Key::ArrowRight
+                    },
+                ) {
                     Some(at + fwd)
-                } else if winui::take_key(ui, egui::Key::ArrowLeft) {
+                } else if winui::take_key(
+                    ui,
+                    if mac {
+                        egui::Key::ArrowUp
+                    } else {
+                        egui::Key::ArrowLeft
+                    },
+                ) {
                     Some(at - fwd)
                 } else if winui::take_key(ui, egui::Key::Home) {
                     Some(0)
@@ -5193,6 +5251,37 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
                     ui.memory_mut(|m| m.request_focus(egui::Id::unique(("opt-tab", next))));
                 }
             }
+        }
+        if mac {
+            if sel || resp.hovered() {
+                p.rect_filled(
+                    rc,
+                    6.0,
+                    if sel {
+                        crate::theme::colors().selection
+                    } else {
+                        winui::TAB_HOT()
+                    },
+                );
+            }
+            let full = crate::i18n::t(label);
+            let shown = winui::ellipsize(&p, &winui::tahoma(), full, x1 - x0 - 16.0);
+            let drawn = text(
+                &p,
+                o.x + lx,
+                o.y + base,
+                &shown,
+                if sel {
+                    crate::theme::colors().selection_text
+                } else {
+                    LIGHT_TEXT()
+                },
+            );
+            if shown != full {
+                winui::full_on_hover(ui, drawn, ("opt-tab-label", i), full);
+            }
+            winui::show_focus(ui, &resp, rc);
+            return;
         }
         let face = if sel {
             LIGHT_PAGE()
@@ -5240,6 +5329,28 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
         }
         winui::show_focus(ui, &resp, rc.shrink(2.0));
     };
+    if mac {
+        p.rect_filled(r(o, 0.0, 0.0, SETTINGS_SIDEBAR, 480.0), 0.0, LIGHT_PAGE());
+        fill(
+            &p,
+            o.x + SETTINGS_SIDEBAR - 1.0,
+            o.y,
+            o.x + SETTINGS_SIDEBAR - 1.0,
+            o.y + 479.0,
+            border,
+        );
+        for (index, &(id, label, ..)) in G.iter().chain(&P).enumerate() {
+            let top = 12.0 + index as f32 * 29.0;
+            tab(
+                ui,
+                (id, label, 8.0, SETTINGS_SIDEBAR - 9.0, 16.0),
+                top,
+                top + 17.0,
+                id == page,
+            );
+        }
+        return clicked;
+    }
     for t in back {
         tab(ui, *t, 9.0, 22.0, false);
     }
@@ -5295,6 +5406,16 @@ fn header(
     rule_x1: f32,
 ) {
     let p = ui.painter().clone();
+    if crate::theme::mac_layout() {
+        let full = crate::i18n::t(title);
+        let font = winui::tahoma_bold();
+        let shown = winui::ellipsize(&p, &font, full, 376.0);
+        let rc = winui::text_font(&p, font, o.x + 22.0, o.y + 67.0, &shown, LIGHT_TEXT());
+        if shown != full {
+            winui::full_on_hover(ui, rc, ("settings-title", title), full);
+        }
+        return;
+    }
     icon.image(true).paint_at(ui, r(o, 21.0, 54.0, 32.0, 32.0));
     let font = if bold {
         winui::tahoma_bold()

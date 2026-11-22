@@ -10378,6 +10378,22 @@ impl App {
         }
     }
 
+    fn uses_native_popup(&self) -> bool {
+        crate::theme::mac_layout()
+            && !crate::offscreen()
+            && !matches!(self.popup, Some((Popup::DropTarget, ..)))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn take_native_popup(&mut self) -> Option<(Pos2, Vec<MenuEntry<Cmd>>, Option<u64>)> {
+        if self.popup.is_none() || !self.uses_native_popup() {
+            return None;
+        }
+        let (kind, at, _) = self.popup.take()?;
+        let (entries, target) = self.popup_entries(kind);
+        Some((at, entries, target))
+    }
+
     fn open_popup(&mut self, kind: Popup, at: Pos2) {
         self.popup_serial += 1;
         self.popup = Some((kind, at, self.popup_serial));
@@ -11032,7 +11048,9 @@ impl App {
         if let Some(pos) = r.header_context {
             self.open_popup(Popup::Columns, pos);
         }
-        if let Some((kind, pos, serial)) = self.popup {
+        if self.popup.is_some() && self.uses_native_popup() {
+            ctx.request_repaint();
+        } else if let Some((kind, pos, serial)) = self.popup {
             let (entries, target) = self.popup_entries(kind);
             match chrome::popup(
                 &ctx,

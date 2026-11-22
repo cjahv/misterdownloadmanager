@@ -838,7 +838,14 @@ pub fn show(
         if state != winui::State::Normal || st.sort.is_some_and(|(sc, _)| sc == *c) {
             winui::header_shade(&p, *x0, x1 - 1.0, ct + header_h() - 1.0, hovered);
         }
-        winui::header_divider(&p, *x1, ct, ct + header_h() - 1.0, HEADER_SEP());
+        let inset = if mac { 6.0 } else { 0.0 };
+        winui::header_divider(
+            &p,
+            *x1,
+            ct + inset,
+            ct + header_h() - inset - 1.0,
+            HEADER_SEP(),
+        );
         let mut arrow_room = if st.sort.is_some_and(|(sc, _)| sc == *c) {
             14.0
         } else {
@@ -850,7 +857,7 @@ pub fn show(
         let filtered = st.filters[*c].is_some();
         let open = st.filter_open.is_some_and(|(fc, _)| fc == *c);
         let roomy = x1 - x0 >= 44.0;
-        if roomy || filtered || hovered || open {
+        if (!mac && roomy) || filtered || hovered || open {
             let fr = funnel_rect(st, *c, *x0, *x1, ct);
             let color = if filtered {
                 FILTER_ON()
@@ -1096,7 +1103,20 @@ pub fn show(
                     } else {
                         TEXT()
                     };
-                    dotted(&bp, cl, top, right, bottom, dot);
+                    if mac {
+                        let rc = screen(Rect::from_min_max(
+                            pos2(cl + 2.0, top + 1.0),
+                            pos2(right - 1.0, bottom),
+                        ));
+                        bp.rect_stroke(
+                            rc,
+                            6.0,
+                            egui::Stroke::new(1.5, dot),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else {
+                        dotted(&bp, cl, top, right, bottom, dot);
+                    }
                 }
             } else if picked {
                 // Unfocused (Find, Properties, a menu has the keys): still shown, in the inactive

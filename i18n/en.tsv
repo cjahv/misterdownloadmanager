@@ -2279,7 +2279,7 @@
 #. text in crashui.rs
 #. crash report window heading: MDM crashed and is gone
 	Mister Download Manager closed unexpectedly	Mister Download Manager closed unexpectedly
-#. window title in the Options window
+#. text in the Options window
 	Mister Download Manager Configuration	Mister Download Manager Configuration
 #. text in crashui.rs
 	Mister Download Manager crash report	Mister Download Manager crash report
@@ -5449,7 +5449,7 @@ extension	Sending to {server}	Sending to {server}
 #. text in the browser extension
 #. shown briefly on the download button after it was clicked; keep the name Mister Download Manager as it is
 extension	Sent to Mister Download Manager	Sent to Mister Download Manager
-#. text in the browser extension
+#. text in the Options window; text in the browser extension
 #. tab in the toolbar button's popup: the extension's settings; noun, short
 extension	Settings	Settings
 #. text in the browser extension

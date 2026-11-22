@@ -3755,6 +3755,13 @@ fn set_xattr(path: &Path, name: &str, value: &str) {
     };
 }
 
+#[cfg(target_os = "macos")]
+pub fn macos_overlay_scrollbars() -> bool {
+    use objc2_app_kit::{NSScroller, NSScrollerStyle};
+    objc2::MainThreadMarker::new()
+        .is_some_and(|mtm| NSScroller::preferredScrollerStyle(mtm) == NSScrollerStyle::Overlay)
+}
+
 /// Accessory apps can focus windows and receive status-item clicks without a Dock tile.
 #[cfg(target_os = "macos")]
 pub fn set_dock_hidden(hidden: bool) -> bool {

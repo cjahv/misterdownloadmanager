@@ -855,11 +855,12 @@ impl AddUrl {
             self.fill_from_clipboard(&clip);
         }
         self.follow_site_login(site_login);
+        let mac = crate::theme::mac_layout();
         window(
             ctx,
             "add-url",
             "Enter new address to download",
-            [560.0, 93.0],
+            if mac { [480.0, 136.0] } else { [560.0, 93.0] },
             false,
             winui::BG(),
             |ui, o| {
@@ -965,7 +966,11 @@ impl AddUrl {
 
                 let ok = winui::button(
                     ui,
-                    r(o, 475.0, 12.0, 79.0, 19.0),
+                    if mac {
+                        r(o, 385.0, 99.0, 79.0, 24.0)
+                    } else {
+                        r(o, 475.0, 12.0, 79.0, 19.0)
+                    },
                     "OK",
                     ButtonKind::Default,
                     false,
@@ -974,7 +979,11 @@ impl AddUrl {
                 .clicked();
                 let cancel = winui::button(
                     ui,
-                    r(o, 475.0, 40.0, 79.0, 21.0),
+                    if mac {
+                        r(o, 298.0, 99.0, 79.0, 24.0)
+                    } else {
+                        r(o, 475.0, 40.0, 79.0, 21.0)
+                    },
                     "Cancel",
                     ButtonKind::Normal,
                     false,
@@ -3208,6 +3217,7 @@ impl ConfirmDelete {
         let extra = grow_extra(ctx, "confirm-delete");
         // The finished files' line under the box, while it is ticked (#1563).
         let warned = grow_extra(ctx, "confirm-delete-finished");
+        let mac = crate::theme::mac_layout();
         question(
             ctx,
             "confirm-delete",
@@ -3294,30 +3304,53 @@ it from Mister Download Manager list of downloads?",
                 let o = o + vec2(0.0, warn);
                 let yes = winui::button_light(
                     ui,
-                    r(o, 94.0, 86.0, 73.0, 21.0),
-                    "Yes",
-                    ButtonKind::Default,
+                    if mac {
+                        r(o, 280.0, 110.0, 80.0, 24.0)
+                    } else {
+                        r(o, 94.0, 86.0, 73.0, 21.0)
+                    },
+                    if !mac {
+                        "Yes"
+                    } else if self.files {
+                        "Delete"
+                    } else {
+                        "Remove"
+                    },
+                    if mac {
+                        ButtonKind::Normal
+                    } else {
+                        ButtonKind::Default
+                    },
                     false,
                 )
                 .clicked();
                 let no = winui::button_light(
                     ui,
-                    r(o, 207.0, 86.0, 73.0, 21.0),
-                    "No",
-                    ButtonKind::Normal,
+                    if mac {
+                        r(o, 192.0, 110.0, 80.0, 24.0)
+                    } else {
+                        r(o, 207.0, 86.0, 73.0, 21.0)
+                    },
+                    if mac { "Cancel" } else { "No" },
+                    if mac {
+                        ButtonKind::Default
+                    } else {
+                        ButtonKind::Normal
+                    },
                     false,
                 )
                 .clicked();
                 winui::checkbox_light(
                     ui,
-                    o + vec2(24.0, 120.0),
+                    o + vec2(24.0, if mac { 82.0 } else { 120.0 }),
                     &mut self.dont_show,
                     "Don't show this dialog again",
                     true,
                 );
-                if no || winui::escape_pressed(ui) {
+                let enter = winui::enter_pressed(ui);
+                if no || winui::escape_pressed(ui) || (mac && enter && !yes) {
                     Outcome::Closed
-                } else if yes || winui::enter_pressed(ui) {
+                } else if yes || (!mac && enter) {
                     Outcome::Done((self.files, self.dont_show))
                 } else {
                     Outcome::Open

@@ -3684,6 +3684,9 @@ pub fn group_box(p: &Painter, rc: Rect, gap: Option<(f32, f32)>) {
         }
         None => hline(p, l, rr, t, GROUP_LINE()),
     }
+    if crate::theme::mac_layout() {
+        return;
+    }
     vline(p, l, t, b, GROUP_LINE());
     vline(p, rr, t, b, GROUP_LINE());
     hline(p, l, rr, b, GROUP_LINE());
@@ -4117,6 +4120,14 @@ fn button_face(
     } else {
         Sense::hover()
     };
+    let mac = crate::theme::mac_layout();
+    let caption;
+    let label = if mac {
+        caption = crate::chrome::mac_caption(label);
+        caption.as_str()
+    } else {
+        label
+    };
     // Keyed by its place, not its label: Pause becoming Resume keeps the focus.
     let resp = ui.interact(
         rc,
@@ -4139,10 +4150,15 @@ fn button_face(
     }
     let state = State::of(&resp, enabled);
     let p = ui.painter();
+    let kind = if mac && kind == ButtonKind::Default {
+        ButtonKind::Accent
+    } else {
+        kind
+    };
     let face = button_colors(kind, state, crate::theme::colors());
     let radius = paint_button(p, rc, kind, state, &face, Shape::Push);
     // "&Start now": the letter after '&' is underlined and Alt+letter presses it.
-    let (shown, mnemonic) = match label.split_once('&') {
+    let (shown, mnemonic) = match label.split_once('&').filter(|_| !mac) {
         Some((before, after)) if !after.is_empty() => (format!("{before}{after}"), Some(before)),
         _ => (label.to_owned(), None),
     };
@@ -4184,7 +4200,11 @@ fn button_face(
         resp
     };
     if resp.has_focus() || (default_focus && ui.ctx().memory(|m| m.focused().is_none())) {
-        focus_ring_round(ui.painter(), rc.shrink(2.0), (radius - 2.0).max(0.0));
+        if mac {
+            focus_ring_round(ui.painter(), rc.expand(2.0), radius + 2.0);
+        } else {
+            focus_ring_round(ui.painter(), rc.shrink(2.0), (radius - 2.0).max(0.0));
+        }
     }
     if cut {
         resp.on_hover_text(label.replace('&', ""))
@@ -4208,6 +4228,17 @@ fn paint_button(
     let c = crate::theme::colors();
     let m = crate::theme::metrics();
     let look = crate::theme::current().controls.button;
+    if crate::theme::mac_layout() && shape == Shape::Push {
+        let radius = 6.0_f32.min(rc.height() / 2.0);
+        p.rect_filled(rc, radius, face.fill);
+        p.rect_stroke(
+            rc,
+            radius,
+            Stroke::new(1.0, face.border),
+            StrokeKind::Inside,
+        );
+        return radius;
+    }
     let part = shape != Shape::Push;
     let radius = match look {
         _ if shape == Shape::DropDown => control_radius(),
@@ -4538,6 +4569,15 @@ pub fn focus_ring_round(p: &Painter, rc: Rect, radius: f32) {
         return;
     }
     let ink = crate::theme::colors().focus_ring;
+    if crate::theme::mac_layout() {
+        p.rect_stroke(
+            rc,
+            radius,
+            Stroke::new(2.0, crate::theme::colors().button_accent),
+            StrokeKind::Inside,
+        );
+        return;
+    }
     // GNOME: a rounded ring, as wide as two points, the controls' corners.
     match crate::theme::current().controls.focus {
         crate::palette::FocusLook::Ring => {
@@ -4793,6 +4833,32 @@ fn era_check(p: &Painter, rc: Rect, on: bool, state: State, round: bool) -> bool
 }
 
 pub fn check_box_glyph(p: &Painter, rc: Rect, checked: bool, state: State) {
+    if crate::theme::mac_layout() {
+        let c = crate::theme::colors();
+        let kind = if state == State::Disabled {
+            ButtonKind::Disabled
+        } else if checked {
+            ButtonKind::Accent
+        } else {
+            ButtonKind::Normal
+        };
+        let face = button_colors(kind, state, c);
+        p.rect_filled(rc, 3.5, face.fill);
+        p.rect_stroke(
+            rc,
+            3.5,
+            Stroke::new(1.0, if checked { face.border } else { c.list_frame }),
+            StrokeKind::Inside,
+        );
+        if checked {
+            let at = |x, y| rc.min + vec2(rc.width() * x, rc.height() * y);
+            p.line(
+                vec![at(0.20, 0.51), at(0.42, 0.73), at(0.81, 0.26)],
+                Stroke::new(1.8, face.text),
+            );
+        }
+        return;
+    }
     if era_check(p, rc, checked, state, false) {
         return;
     }
@@ -5732,6 +5798,10 @@ pub fn radio_keys(ui: &Ui, group: &[Response]) -> Option<usize> {
 /// white line 1 px longer so it covers the far end.
 pub fn etched_h(p: &Painter, x: f32, y: f32, w: f32) {
     let x = rect(Rect::from_min_size(pos2(x, y), vec2(w, 2.0))).left();
+    if crate::theme::mac_layout() {
+        hline(p, x, x + w - 1.0, y, HEADER_LINE());
+        return;
+    }
     hline(p, x, x + w - 2.0, y, ETCH_SHADOW());
     px(p, x + w - 1.0, y, ETCH_LIGHT());
     hline(p, x, x + w - 1.0, y + 1.0, ETCH_LIGHT());
@@ -5740,6 +5810,10 @@ pub fn etched_h(p: &Painter, x: f32, y: f32, w: f32) {
 /// Etched vertical separator in English rect `x, y, 2 × h`.
 pub fn etched_v(p: &Painter, x: f32, y: f32, h: f32) {
     let x = rect(Rect::from_min_size(pos2(x, y), vec2(2.0, h))).left();
+    if crate::theme::mac_layout() {
+        vline(p, x, y, y + h - 1.0, HEADER_LINE());
+        return;
+    }
     vline(p, x, y, y + h - 2.0, ETCH_SHADOW());
     px(p, x, y + h - 1.0, ETCH_LIGHT());
     vline(p, x + 1.0, y, y + h - 1.0, ETCH_LIGHT());
@@ -5887,13 +5961,16 @@ pub fn tabs_light(
         rc.right() - 3.0,
         rc.bottom() - 2.0,
     );
-    fill(&p, l, t, rr, b, LIGHT_PAGE());
-    hline(&p, l, rr, t, border);
-    hline(&p, l, rr, b, border);
-    vline(&p, l, t, b, border);
-    vline(&p, rr, t, b, border);
-    fill(&p, rr + 1.0, t, rr + 2.0, b + 1.0, shadow);
-    hline(&p, l, rr + 2.0, b + 1.0, shadow);
+    let mac = crate::theme::mac_layout();
+    if !mac {
+        fill(&p, l, t, rr, b, LIGHT_PAGE());
+        hline(&p, l, rr, t, border);
+        hline(&p, l, rr, b, border);
+        vline(&p, l, t, b, border);
+        vline(&p, rr, t, b, border);
+        fill(&p, rr + 1.0, t, rr + 2.0, b + 1.0, shadow);
+        hline(&p, l, rr + 2.0, b + 1.0, shadow);
+    }
     // (selected range, unselected range, label x, label shown), from the client origin.
     type Placed = ((f32, f32), (f32, f32), f32, String);
     let placed: Vec<Placed> = if tabs.iter().all(|t| crate::i18n::t(t.label) == t.label) {
@@ -5914,13 +5991,20 @@ pub fn tabs_light(
             .collect()
     };
     let mut clicked = None;
+    if mac && let (Some(first), Some(last)) = (placed.first(), placed.last()) {
+        let track = Rect::from_two_pos(
+            pos2(mcol(o.x + first.1.0), rc.top()),
+            pos2(mcol(o.x + last.1.1), t),
+        );
+        p.rect_filled(track, 6.0, shadow);
+    }
     let mut draw = |i: usize, tab: &LightTab, sel: bool| {
         let (sel_x, unsel_x, label_x, shown) = &placed[i];
-        let (x0, x1) = if sel { *sel_x } else { *unsel_x };
+        let (x0, x1) = if sel && !mac { *sel_x } else { *unsel_x };
         // English pixel columns; the tabs run from the leading edge.
         let (a, b) = (mcol(o.x + x0), mcol(o.x + x1));
         let (x0, x1) = (a.min(b), a.max(b));
-        let y0 = if sel { rc.top() } else { rc.top() + 2.0 };
+        let y0 = if mac || sel { rc.top() } else { rc.top() + 2.0 };
         let hit = Rect::from_min_max(pos2(x0, y0), pos2(x1 + 1.0, t));
         // Keyed by the control's place and the tab's index: its x changes when it is chosen,
         // and the focus must stay on it.
@@ -5963,6 +6047,27 @@ pub fn tabs_light(
                     ui.memory_mut(|m| m.request_focus(next));
                 }
             }
+        }
+        if mac {
+            if sel || resp.hovered() {
+                p.rect_filled(
+                    hit.shrink(1.0),
+                    4.0,
+                    if sel {
+                        crate::theme::colors().button
+                    } else {
+                        TAB_HOT()
+                    },
+                );
+            }
+            let x = hit.center().x - text_width(&p, shown) / 2.0;
+            let drawn = text_at(&p, tahoma(), x, rc.top() + 14.0, shown, LIGHT_TEXT());
+            show_focus(ui, &resp, hit);
+            let full = crate::i18n::t(tab.label);
+            if shown != full {
+                full_on_hover(ui, drawn, ("tab-light-label", i), full);
+            }
+            return;
         }
         let face = if sel {
             LIGHT_PAGE()

@@ -452,9 +452,15 @@ fn menu_caption(label: &str) -> &str {
     label
 }
 
-#[cfg(target_os = "macos")]
 pub fn mac_caption(label: &str) -> String {
-    menu_caption(&plain(label).0).to_owned()
+    let (plain, _) = plain(label);
+    let stem = plain
+        .strip_suffix("...")
+        .or_else(|| plain.strip_suffix('…'));
+    match stem {
+        Some(stem) => format!("{}…", menu_caption(stem)),
+        None => menu_caption(&plain).to_owned(),
+    }
 }
 
 fn plain(label: &str) -> (String, Option<usize>) {
