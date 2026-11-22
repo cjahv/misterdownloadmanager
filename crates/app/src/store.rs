@@ -150,6 +150,19 @@ fn load_from(p: &Path, empty: Loaded) -> Loaded {
                 }
             }
             let mut settings = f.settings;
+            #[cfg(target_os = "macos")]
+            if !settings.mac_layout_initialized {
+                settings.mac_layout_initialized = true;
+                if settings.theme == "classic" || settings.theme == "native" {
+                    settings.theme = "native".into();
+                    if settings.categories_width == 143 {
+                        settings.categories_width = 188;
+                    }
+                    if let Some(columns) = &mut f.columns {
+                        columns.upgrade_mac_defaults();
+                    }
+                }
+            }
             settings.list_known_browsers();
             // An earlier version's default File types, untouched, become today's (#208); a list
             // the user edited stays as it is.

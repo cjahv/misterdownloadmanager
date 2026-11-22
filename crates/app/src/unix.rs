@@ -2736,10 +2736,9 @@ fn icon_theme(kde: bool) -> Option<String> {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileicons::Native> {
-    use crate::fileicons::{Native, What};
-    use objc2::AllocAnyThread as _;
-    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSWorkspace};
-    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use crate::fileicons::What;
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
     // An extension, or a type identifier where there is none.
     let ty = match what {
         // Finder has no open folder of its own: its folder.
@@ -2747,15 +2746,46 @@ pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileic
         What::File(Some(ext)) => ext.clone(),
         What::File(None) => "public.data".to_string(),
     };
-    let side = px.clamp(1, 1024) as usize;
     objc2::rc::autoreleasepool(|_| {
         #[allow(deprecated)] // iconForContentType needs a UTType; this takes the extension as is.
         let image = NSWorkspace::sharedWorkspace().iconForFileType(&NSString::from_str(&ty));
-        // SAFETY: no planes, so the bitmap allocates and owns its pixels: 8-bit RGBA, packed rows
-        // (0 lets it choose the row length and bits per pixel). The colour space name is AppKit's
-        // own constant.
-        let rep = unsafe {
-            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+        raster_mac_image(&image, px)
+    })
+}
+
+/// A system symbol rendered on the UI thread. Use only its alpha for both appearances.
+#[cfg(target_os = "macos")]
+pub fn mac_symbol(name: &str, px: u32) -> Option<egui::ColorImage> {
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::NSString;
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        None,
+    )?;
+    let crate::fileicons::Native::Rgba { side, rgba, .. } = raster_mac_image(&image, px)? else {
+        return None;
+    };
+    Some(egui::ColorImage::new(
+        [side as usize; 2],
+        rgba.chunks_exact(4)
+            .map(|pixel| egui::Color32::from_white_alpha(pixel[3]))
+            .collect(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn raster_mac_image(image: &objc2_app_kit::NSImage, px: u32) -> Option<crate::fileicons::Native> {
+    use crate::fileicons::Native;
+    use objc2::AllocAnyThread as _;
+    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let side = px.clamp(1, 1024) as usize;
+    // SAFETY: no planes, so the bitmap allocates and owns its pixels: 8-bit RGBA, packed rows
+    // (0 lets it choose the row length and bits per pixel). The colour space name is AppKit's
+    // own constant.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
                 NSBitmapImageRep::alloc(),
                 std::ptr::null_mut(),
                 side as isize,
@@ -2768,31 +2798,34 @@ pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileic
                 0,
                 0,
             )
-        }?;
-        let gc = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
-        NSGraphicsContext::saveGraphicsState_class();
-        NSGraphicsContext::setCurrentContext(Some(&gc));
-        let edge = side as f64;
-        image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(edge, edge)));
-        gc.flushGraphics();
-        NSGraphicsContext::restoreGraphicsState_class();
-        let row = rep.bytesPerRow() as usize;
-        let data = rep.bitmapData();
-        if data.is_null() || row < side * 4 {
-            return None;
-        }
-        let mut rgba = Vec::with_capacity(side * side * 4);
-        for y in 0..side {
-            // SAFETY: the bitmap holds `side` rows of `row` bytes, alive while `rep` is.
-            rgba.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(data.add(y * row), side * 4)
-            });
-        }
-        Some(Native::Rgba {
-            side: side as u32,
-            rgba,
-            premultiplied: true,
-        })
+    }?;
+    let gc = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&gc));
+    let edge = side as f64;
+    let size = image.size();
+    let scale = edge / size.width.max(size.height).max(1.0);
+    let size = NSSize::new(size.width * scale, size.height * scale);
+    image.drawInRect(NSRect::new(
+        NSPoint::new((edge - size.width) / 2.0, (edge - size.height) / 2.0),
+        size,
+    ));
+    gc.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let row = rep.bytesPerRow() as usize;
+    let data = rep.bitmapData();
+    if data.is_null() || row < side * 4 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(side * side * 4);
+    for y in 0..side {
+        // SAFETY: the bitmap holds `side` rows of `row` bytes, alive while `rep` is.
+        rgba.extend_from_slice(unsafe { std::slice::from_raw_parts(data.add(y * row), side * 4) });
+    }
+    Some(Native::Rgba {
+        side: side as u32,
+        rgba,
+        premultiplied: true,
     })
 }
 

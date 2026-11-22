@@ -6,7 +6,9 @@
 
 use egui::Color32;
 
-use crate::palette::{CLASSIC, Palette, Theme};
+#[cfg(any(test, not(target_os = "macos")))]
+use crate::palette::CLASSIC;
+use crate::palette::{Palette, Theme};
 
 /// The system's accent and, when the system gives them, its lighter and darker shades.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,6 +143,14 @@ pub fn theme(sys: &System) -> Theme {
         t.name = "Native".into();
         return t;
     }
+    #[cfg(target_os = "macos")]
+    let mut t = {
+        static BASE: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
+            crate::themefile::builtin("native", include_str!("../assets/themes/macos-native.toml"))
+        });
+        BASE.clone()
+    };
+    #[cfg(not(target_os = "macos"))]
     let mut t = CLASSIC.clone();
     t.id = "native".into();
     t.name = "Native".into();

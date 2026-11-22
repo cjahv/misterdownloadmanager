@@ -259,6 +259,9 @@ pub struct Settings {
     /// The look (#45): a built-in theme's id ("classic", the default) or a theme file's name in
     /// the data folder's `themes` folder (crate::themefile).
     pub theme: String,
+    #[cfg(target_os = "macos")]
+    #[serde(default)]
+    pub mac_layout_initialized: bool,
     /// View → Draw with (#89): OpenGL or Direct3D (Windows only), used from the next start.
     /// None: MDM's default (`renderer::DEFAULT`), which may change.
     pub renderer: Option<crate::renderer::Api>,
@@ -591,7 +594,7 @@ impl Default for Settings {
             complete_snoozed_until: None,
             double_click_open: false,
             confirm_delete: true,
-            categories_width: 143,
+            categories_width: if cfg!(target_os = "macos") { 188 } else { 143 },
             window: None,
             window_maximized: false,
             show_categories: true,
@@ -599,7 +602,14 @@ impl Default for Settings {
             view: None,
             dark_mode_support: true,
             always_dark: false,
-            theme: "classic".into(),
+            theme: if cfg!(target_os = "macos") {
+                "native"
+            } else {
+                "classic"
+            }
+            .into(),
+            #[cfg(target_os = "macos")]
+            mac_layout_initialized: true,
             renderer: None,
             window_system: None,
             interface_size: 100,

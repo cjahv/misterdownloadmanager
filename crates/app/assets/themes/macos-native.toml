@@ -1,0 +1,76 @@
+# Mac's native theme. The user's system accent is applied to both palettes at runtime.
+name = "Native"
+icons = "mono"
+icon-set = "breeze"
+
+[controls]
+field-focus = "ring"
+focus = "ring"
+scroll = "overlay"
+
+[sizes]
+radius = 8
+"radius.part" = 6
+"radius.check" = 4
+"radius.flyout" = 10
+"radius.menu-item" = 5
+"radius.popup" = 10
+"radius.egui" = 7
+"list.row" = 30
+"list.header" = 29
+
+[seeds.light]
+background = "#f4f5f7"
+surface = "#ffffff"
+header = "#f8f9fa"
+text = "#222327"
+accent = "#0066cf"
+selection = "#0066cf"
+error = "#b32722"
+warning = "#8f5500"
+success = "#20713d"
+
+[seeds.dark]
+background = "#26272a"
+surface = "#1d1e21"
+header = "#252629"
+text = "#f2f2f5"
+accent = "#66b2ff"
+selection = "#265f9c"
+error = "#ff9893"
+warning = "#ffd589"
+success = "#83d99c"
+
+[light]
+tree = "#edeef1"
+"tree.frame" = "#edeef1"
+menubar = "#f4f5f7"
+"menubar.bottom" = "#f4f5f7"
+"menubar.line" = "#f4f5f7"
+"toolbar.line" = "#f4f5f7"
+"toolbar.line.light" = "#f4f5f7"
+"list.frame" = "#e1e2e5"
+"list.grid" = "#eff0f2"
+"header.sep" = "#e0e2e6"
+"chip.web" = "#edf0f4"
+"chip.torrent" = "#e7eaf2"
+"chip.text" = "#425065"
+"scroll.track" = "#f5f5f6"
+"scroll.corner" = "#f5f5f6"
+
+[dark]
+tree = "#28292d"
+"tree.frame" = "#28292d"
+menubar = "#26272a"
+"menubar.bottom" = "#26272a"
+"menubar.line" = "#26272a"
+"toolbar.line" = "#26272a"
+"toolbar.line.light" = "#26272a"
+"list.frame" = "#37383b"
+"list.grid" = "#2c2d30"
+"header.sep" = "#3b3c40"
+"chip.web" = "#30343b"
+"chip.torrent" = "#363442"
+"chip.text" = "#d2d9e4"
+"scroll.track" = "#222326"
+"scroll.corner" = "#222326"

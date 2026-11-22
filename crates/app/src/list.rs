@@ -139,6 +139,9 @@ pub const DEFAULT_WIDTHS: [f32; COLS] = [
 /// Added after Last Try Date.
 const DEFAULT_ORDER: [usize; COLS] = [SOURCE, 0, 1, 2, 3, 4, 5, UPLOAD, PEERS, RATIO, 6, ADDED, 7];
 
+const MAC_ORDER: [usize; COLS] = [0, 3, 2, 5, SOURCE, 4, 1, UPLOAD, PEERS, RATIO, 6, ADDED, 7];
+const MAC_FILENAME_WIDTH: f32 = 225.0;
+
 const MIN_WIDTH: f32 = 16.0;
 /// How far from a separator a press grabs it for resizing.
 const GRIP: f32 = 4.0;
@@ -246,9 +249,16 @@ pub struct ListState {
 
 impl Default for ListState {
     fn default() -> Self {
+        let mut widths = DEFAULT_WIDTHS;
+        let order = if crate::theme::mac_layout() {
+            widths[0] = MAC_FILENAME_WIDTH;
+            MAC_ORDER
+        } else {
+            DEFAULT_ORDER
+        };
         ListState {
-            order: DEFAULT_ORDER.to_vec(),
-            widths: DEFAULT_WIDTHS,
+            order: order.to_vec(),
+            widths,
             visible: [true; COLS],
             sort: None,
             scroll: 0.0,
@@ -282,6 +292,18 @@ pub struct Layout {
     /// in a layout saved before #736, where a Status at IDM's 65 px means it was never resized.
     #[serde(default)]
     pub status_fits: Option<bool>,
+}
+
+#[cfg(target_os = "macos")]
+impl Layout {
+    pub fn upgrade_mac_defaults(&mut self) {
+        if self.order == DEFAULT_ORDER {
+            self.order = MAC_ORDER.to_vec();
+        }
+        if self.widths.first() == Some(&DEFAULT_WIDTHS[0]) {
+            self.widths[0] = MAC_FILENAME_WIDTH;
+        }
+    }
 }
 
 impl ListState {
@@ -600,7 +622,9 @@ pub fn show(
     winui::solid(&p, screen(outer), FRAME());
     fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
+    let mac = crate::theme::mac_layout();
     let font = winui::tahoma();
+    let content_offset = ((row_h() - 17.0) * 0.5).round();
     // Status at its default width follows the font and the language (#736): a few words to
     // measure, kept by egui from frame to frame.
     if st.status_fits {
@@ -858,7 +882,14 @@ pub fn show(
             *x0..=*x1,
             ct..=ct + header_h(),
         )));
-        text_font(&clip, font.clone(), x0 + 6.0, ct + 15.0, &label, TEXT());
+        text_font(
+            &clip,
+            font.clone(),
+            x0 + 6.0,
+            ct + 15.0 + ((header_h() - 24.0) * 0.5).round(),
+            &label,
+            TEXT(),
+        );
     }
 
     // ---- body ------------------------------------------------------------------------------
@@ -1042,7 +1073,18 @@ pub fn show(
                 // pixel), in the fill's inverse on a selected row. Both modes alike.
                 let (right, bottom) = (last_right - 1.0, top + row_h() - 2.0);
                 if sel {
-                    fill(&bp, cl, top, right, bottom, SELECTED());
+                    if mac {
+                        bp.rect_filled(
+                            screen(Rect::from_min_max(
+                                pos2(cl + 2.0, top + 1.0),
+                                pos2(right - 1.0, bottom),
+                            )),
+                            6.0,
+                            SELECTED(),
+                        );
+                    } else {
+                        fill(&bp, cl, top, right, bottom, SELECTED());
+                    }
                 }
                 if has_focus {
                     let dot = if sel {
@@ -1068,7 +1110,12 @@ pub fn show(
             for (c, x0, x1) in &cols {
                 // The file-type icon sits in the File Name column, wherever it is.
                 let tx = if *c == 0 {
-                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, top));
+                    icons.paint_in(
+                        ui,
+                        &bp,
+                        row.icon.clone(),
+                        pos2(x0 + 4.0, top + content_offset),
+                    );
                     x0 + 22.0
                 } else {
                     x0 + 6.0
@@ -1078,7 +1125,7 @@ pub fn show(
                         ui,
                         &bp,
                         IconKey::Silk("page_white_stack"),
-                        pos2(x0 + 2.0, top),
+                        pos2(x0 + 2.0, top + content_offset),
                     );
                 }
                 let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
@@ -1136,7 +1183,35 @@ pub fn show(
                 } else {
                     TEXT()
                 };
-                text_font(&clip, font.clone(), tx, top + 12.0, &s, ink);
+                if mac
+                    && *c == STATUS
+                    && let Some(fraction) = row.progress.filter(|f| *f > 0.0 && *f < 1.0)
+                {
+                    let track = Rect::from_min_max(
+                        pos2(tx, top + row_h() - 5.0),
+                        pos2((x1 - 8.0).max(tx), top + row_h() - 3.0),
+                    );
+                    clip.rect_filled(screen(track), 1.0, crate::theme::colors().list_grid);
+                    let mut filled = track;
+                    filled.set_width(track.width() * fraction as f32);
+                    clip.rect_filled(
+                        screen(filled),
+                        1.0,
+                        if sel {
+                            ink
+                        } else {
+                            crate::theme::colors().accent
+                        },
+                    );
+                }
+                text_font(
+                    &clip,
+                    font.clone(),
+                    tx,
+                    top + 12.0 + content_offset,
+                    &s,
+                    ink,
+                );
             }
         }
         // The grid line is the item's own last row (top + 16), so icons are not clipped; in
@@ -1164,7 +1239,7 @@ pub fn show(
         resp.clone().on_hover_text_at_pointer(full);
     }
     filter_box(ui, st);
-    for (_, _, x1) in cols.iter().filter(|_| !rows.is_empty()) {
+    for (_, _, x1) in cols.iter().filter(|_| !mac && !rows.is_empty()) {
         // On the column's last pixel, under its header's divider: one straight line from the
         // header down (#924: it sat a pixel to the right, on the next column's first).
         fill(&bp, *x1, body_top, *x1, rb, GRID_V_RIGHT());
@@ -1492,16 +1567,21 @@ fn chip(
     // Room: the pill starts 5 px in, pads its text 6 px each side, and ends 3 px before the cell.
     let label = &winui::ellipsize(p, font, full, (x1 - x0 - 5.0 - 12.0 - 3.0).max(0.0));
     let w = winui::text_width_font(p, font.clone(), label).round();
+    let height = if crate::theme::mac_layout() {
+        17.0_f32.min(row_h() - 4.0)
+    } else {
+        row_h() - 4.0
+    };
     let pill = Rect::from_min_size(
-        pos2(x0 + 5.0, top + 2.0),
-        egui::vec2(w + 12.0, row_h() - 4.0),
+        pos2(x0 + 5.0, top + (row_h() - height) / 2.0),
+        egui::vec2(w + 12.0, height),
     );
-    p.rect_filled(winui::rect(pill), (row_h() - 4.0) / 2.0, fill);
+    p.rect_filled(winui::rect(pill), height / 2.0, fill);
     text_font(
         p,
         font.clone(),
         pill.left() + 6.0,
-        top + 12.0,
+        top + 12.0 + ((row_h() - 17.0) * 0.5).round(),
         label,
         crate::theme::colors().chip_text,
     );
@@ -1733,6 +1813,23 @@ fn move_column(st: &mut ListState, cols: &[(usize, f32, f32)], col: usize, x: f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_columns_upgrade_only_untouched_defaults() {
+        let mut layout = ListState::default().layout();
+        layout.order = DEFAULT_ORDER.to_vec();
+        layout.widths = DEFAULT_WIDTHS.to_vec();
+        layout.upgrade_mac_defaults();
+        assert_eq!(layout.order, MAC_ORDER);
+        assert_eq!(layout.widths[0], MAC_FILENAME_WIDTH);
+        layout.order.swap(0, 2);
+        layout.widths[0] = 183.0;
+        let manual = layout.order.clone();
+        layout.upgrade_mac_defaults();
+        assert_eq!(layout.order, manual);
+        assert_eq!(layout.widths[0], 183.0);
+    }
 
     #[test]
     fn data_cells_keep_their_own_direction() {

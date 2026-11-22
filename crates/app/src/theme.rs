@@ -51,6 +51,11 @@ pub fn colors() -> &'static Palette {
     current().palette(dark())
 }
 
+/// The native Mac window uses a compact command bar, sidebar and table.
+pub fn mac_layout() -> bool {
+    cfg!(target_os = "macos") && current().id == "native"
+}
+
 /// The active theme's sizes.
 pub fn metrics() -> &'static Metrics {
     &current().metrics
