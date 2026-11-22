@@ -915,7 +915,18 @@ impl OptionsDialog {
             self.sub = Some(Sub::Keys(self.s.capture_opened));
         }
         let label = crate::i18n::t("Customize MDM menu items in context menu of browsers");
-        let (rect, cut) = winui::text_right(&p, o.x + 313.0, o.y + 428.0, label, LIGHT_DISABLED());
+        let (rect, cut) = if crate::theme::mac_layout() {
+            winui::text_right_within(
+                &p,
+                o.x + 283.0,
+                o.y + 428.0,
+                label,
+                LIGHT_DISABLED(),
+                o.x + 22.0,
+            )
+        } else {
+            winui::text_right(&p, o.x + 313.0, o.y + 428.0, label, LIGHT_DISABLED())
+        };
         if cut {
             winui::full_on_hover(ui, rect, ("general-right", 419), label);
         }
