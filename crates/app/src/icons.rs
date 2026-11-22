@@ -38,8 +38,10 @@ pub enum Icon {
     HelperVideo,
     /// ffmpeg joins its picture and sound,
     HelperMerge,
-    /// and both are checked before they run.
+    /// and both are checked before they run;
     HelperChecked,
+    /// Node.js runs YouTube's JavaScript (#1570).
+    HelperScript,
 }
 
 impl Icon {
@@ -159,6 +161,11 @@ impl Icon {
                 r#"<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>"#,
                 r#"<path d="m9 12 2 2 4-4"/>"#,
             ),
+            // Lucide "braces": a piece of code to run.
+            Icon::HelperScript => concat!(
+                r#"<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/>"#,
+                r#"<path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>"#,
+            ),
             Icon::PageSounds => concat!(
                 r#"<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/>"#,
                 r#"<path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>"#,
@@ -192,6 +199,7 @@ impl Icon {
             Icon::HelperVideo => ("#df6a9c", "#b07ad9"),
             Icon::HelperMerge => ("#3d8ee6", "#2bb3a3"),
             Icon::HelperChecked => ("#3fa864", "#2f7fcf"),
+            Icon::HelperScript => ("#e6a817", "#3fa864"),
         }
     }
 
@@ -223,6 +231,7 @@ impl Icon {
             Icon::HelperVideo => "helper-video",
             Icon::HelperMerge => "helper-merge",
             Icon::HelperChecked => "helper-checked",
+            Icon::HelperScript => "helper-script",
         }
     }
 
@@ -331,68 +340,52 @@ impl Icon {
     }
 }
 
-/// Cache the system glyph mask at the display scale, including misses on older macOS.
+#[cfg(target_os = "macos")]
+pub use crate::unix::macos_icons::paint_mac_symbol;
+
+#[cfg(not(target_os = "macos"))]
 pub fn paint_mac_symbol(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    need: &str,
-    rect: egui::Rect,
-    ink: egui::Color32,
+    _: &egui::Ui,
+    _: &egui::Painter,
+    _: &str,
+    _: egui::Rect,
+    _: egui::Color32,
 ) -> bool {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (ui, painter, need, rect, ink);
-        false
+    false
+}
+
+/// The download list's mark for a private (incognito) window's download (#1581): Lucide
+/// "venetian-mask", 16 × 16, inked in `ink` (the row's text colour, so it reads on a selected
+/// row and in every theme). Made once per ink.
+pub fn private_mark(ink: egui::Color32) -> ImageSource<'static> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static MADE: RefCell<HashMap<[u8; 4], ImageSource<'static>>> = RefCell::default();
     }
-    #[cfg(target_os = "macos")]
-    {
-        let name = match need {
-            "tb-add-url" => "plus",
-            "tb-add-torrent" => "link",
-            "tb-resume" => "play",
-            "tb-stop" => "stop",
-            "tb-stop-all" => "hand.raised",
-            "tb-delete" => "trash",
-            "tb-delete-completed" => "checkmark.circle",
-            "tb-options" => "gearshape",
-            "tb-scheduler" => "clock",
-            "tb-start-queue" => "play.rectangle.on.rectangle",
-            "tb-stop-queue" => "stop.circle",
-            "cat-all" => "tray.2",
-            "cat-unfinished" => "arrow.down.circle",
-            "cat-finished" => "checkmark.circle",
-            "cat-queues" => "list.bullet",
-            "cat-music" => "music.note",
-            "cat-programs" => "app",
-            "cat-compressed" => "archivebox",
-            "cat-video" => "film",
-            "cat-documents" => "doc.text",
-            "cat-torrents" => "link",
-            _ => return false,
-        };
-        let side = (rect.width() * ui.ctx().pixels_per_point()).round() as u32;
-        let key = egui::Id::unique(("mac-symbol", name, side));
-        let cached = ui
-            .ctx()
-            .data(|d| d.get_temp::<Option<egui::TextureHandle>>(key));
-        let texture = cached.unwrap_or_else(|| {
-            let texture = crate::unix::mac_symbol(name, side).map(|mask| {
-                ui.ctx()
-                    .load_texture(name, mask, egui::TextureOptions::LINEAR)
-            });
-            ui.ctx().data_mut(|d| d.insert_temp(key, texture.clone()));
-            texture
-        });
-        if let Some(texture) = texture {
-            painter.image(
-                texture.id(),
-                rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                ink,
-            );
-            true
-        } else {
-            false
-        }
-    }
+    MADE.with(|made| {
+        made.borrow_mut()
+            .entry(ink.to_array())
+            .or_insert_with(|| {
+                let hex = crate::palette::to_hex(ink);
+                let uri: &'static str = Box::leak(
+                    format!("bytes://mdm/list/private-{}.svg", hex.trim_start_matches('#'))
+                        .into_boxed_str(),
+                );
+                let svg = format!(
+                    concat!(
+                        r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+                        r#"<path d="M18 11c-1.5 0-2.5.5-3 2"/>"#,
+                        r#"<path d="M4 6a2 2 0 0 0-2 2v4a5 5 0 0 0 5 5 8 8 0 0 1 5 2 8 8 0 0 1 5-2 5 5 0 0 0 5-5V8a2 2 0 0 0-2-2h-3a8 8 0 0 0-5 2 8 8 0 0 0-5-2z"/>"#,
+                        r#"<path d="M6 11c1.5 0 2.5.5 3 2"/></svg>"#,
+                    ),
+                    hex
+                );
+                ImageSource::Bytes {
+                    uri: uri.into(),
+                    bytes: egui::load::Bytes::Shared(svg.into_bytes().into()),
+                }
+            })
+            .clone()
+    })
 }

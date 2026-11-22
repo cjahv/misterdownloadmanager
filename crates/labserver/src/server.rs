@@ -59,7 +59,7 @@ use tokio::task::JoinHandle;
 
 use crate::content;
 use crate::faults::{CLEARANCE, Faults, challenge_page, every, has_cookie, parse_flag};
-use crate::{debrid, drive, mediafire, pages, rapidgator, streams};
+use crate::{debrid, drive, lulustream, mediafire, pages, rapidgator, streams};
 
 const CHUNK: u64 = 64 * 1024;
 
@@ -279,6 +279,8 @@ pub(crate) struct Shared {
     on_log: Option<LogSink>,
     /// The fake Drive's virus-scan pages' `uuid`s handed out (`drive`).
     pub(crate) drive_uuids: Mutex<HashSet<String>>,
+    /// The fake LuluStream's form posts, per video code (`lulustream`).
+    pub(crate) lulu_posts: Mutex<HashMap<String, u32>>,
     files: Option<std::path::PathBuf>,
     /// Over HTTPS: each connection's ClientHello, browser-like or not (`LogEntry::browser_tls`),
     /// by the client's address.
@@ -419,6 +421,7 @@ impl LabServer {
             log: Mutex::default(),
             on_log: cfg.on_log,
             drive_uuids: Mutex::default(),
+            lulu_posts: Mutex::default(),
             files: cfg.files,
             browser_tls: Mutex::default(),
             link_free: Mutex::new(Instant::now()),
@@ -590,6 +593,10 @@ impl LabServer {
                 post(crate::debrid_torrents::tb_control),
             )
             .route("/_debrid/torrents", get(crate::debrid_torrents::held))
+            .route(
+                "/_debrid/rd-selected/{id}",
+                get(crate::debrid_torrents::rd_selected),
+            )
             // RSS feeds for the app's RSS tests (#39, `feeds`).
             .route("/rss/shows.xml", get(crate::feeds::shows))
             .route("/rss/dir.xml", get(crate::feeds::dir))
@@ -700,13 +707,15 @@ impl Drop for LabServer {
 
 /// Every address the routes don't have, by its Host header: MediaFire's host names go to the fake
 /// MediaFire (`mediafire`), Rapidgator's to the fake Rapidgator (`rapidgator`), the rest to the
-/// fake Google Drive (`drive`, which answers 404 for any host but Google's).
+/// fake Google Drive (`drive`, which answers 404 for any host but Google's). LuluStream's go to
+/// the fake LuluStream (`lulustream`), with the request's body (its form's POST).
 async fn by_host(
     State(shared): State<Arc<Shared>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let host = header_str(&headers, header::HOST)
         .unwrap_or_default()
@@ -719,6 +728,10 @@ async fn by_host(
     if rapidgator::HOSTS.contains(&name) {
         let (name, port) = (name.to_owned(), port.to_owned());
         return rapidgator::handle(shared, peer, method, uri, headers, &name, &port).await;
+    }
+    if lulustream::HOSTS.contains(&name) {
+        let (name, port) = (name.to_owned(), port.to_owned());
+        return lulustream::handle(shared, peer, method, uri, headers, &body, &name, &port).await;
     }
     drive::handle(State(shared), ConnectInfo(peer), method, uri, headers).await
 }
@@ -741,6 +754,8 @@ GET|HEAD /gen/{size}[/{name}]?seed=N&<file params>&<faults>   size: 12345, 64K, 
     type=MIME      that Content-Type instead (none: no Content-Type at all)
     Expires= Signature= Key-Pair-Id= Policy=   ignored: a CloudFront signed address's own keys
     expires=UNIXMS 403 after that time (what /redirect?ttl_ms= adds)
+    from=UNIXMS    403 before that time (a YouTube stream before the ad played ahead of its
+                   video would end: yt-dlp's available_at, #1655)
     uses=N         403 once this path and query has served N requests (what /redirect?uses= adds,
                    with a link= of its own)
     lasts_ms=N     403 once N ms have passed since this link's first request: every address with
@@ -764,6 +779,9 @@ GET|HEAD /gen/{size}[/{name}]?seed=N&<file params>&<faults>   size: 12345, 64K, 
                    instead of the waiting page: a one-time link asked a second time (#1460)
     html_chunked=1 with html=1 or html_after=N: the page chunked, without a Content-Length
     node=N        another server's copy of the same file: its own ETag and date
+    nodes=N        a CDN in front of N copies (as node=): request n gets copy (n-1) mod N
+    digest=1       x-oss-hash-crc64ecma on every answer: the file's version, the same on every
+                   copy (a stand-in value, not the bytes' CRC; etag_change_every changes it)
     etag=weak|per-request|none latency_ms=N range_latency_ms=N (only requests with a Range)
     range_rate=SIZE  the rate of answers to requests with a Range (instead of rate)
     burst=SIZE     with a rate, a link: a response the client stopped reading catches up with
@@ -930,6 +948,16 @@ RAPIDGATOR  a fake one for the engine's tests, on Rapidgator's host names (resol
                             302 to it; without, a free account's page (no link)
   s118.rapidgator.net       /download/<expiry unix ms>-<n>-ID (file params and faults as /gen):
                             the file until then, 404 Not Found after
+
+LULUSTREAM  a fake one for the engine's tests, on LuluStream's host names (resolve lplaygo.com,
+    lulustream.com and s1.lulu-files.test to this server); hand-made pages (src/lulustream.rs)
+  codes: <lab|fla|exp|cap|bad><size>t<TTL s> padded with z to 12, e.g. lab2mt600zzz (fla: its
+    form is taken on its third post only; exp: only its first post's link lasts TTL s; cap:
+    it wants a captcha; bad: it never takes the post)
+  lplaygo.com, lulustream.com  /CODE, /e/CODE: a player; /d/CODE: links to /d/CODE_n and
+                            /d/CODE_h on lulustream.com; /d/CODE_MODE: a form (op, id, mode, hash)
+                            which, posted back, answers with the file's link lasting TTL s
+  s1.lulu-files.test        /v/01/CODE_MODE/NAME?t=<expiry unix ms>: the file until then, 403 after
 
 HTTPS  --tls serves all of it over HTTPS as localhost, its certificate from a test CA made at start
   (written next to the log, or printed); --tls-cert picks a faulty one (a connection's fault,
@@ -1395,6 +1423,8 @@ struct FileQuery {
     seed: u64,
     /// A signed link's end, unix ms.
     expires: Option<u64>,
+    /// When a link starts being served, unix ms: 403 before it (#1655).
+    from: Option<u64>,
     /// The requests a signed link serves (`link` tells the links apart).
     uses: Option<u64>,
     /// How long a signed link lasts from its first request, ms (`link` makes its addresses one).
@@ -1509,6 +1539,10 @@ pub(crate) async fn serve(
     if used_up || lapsed || q.expires.is_some_and(|t| unix_ms() > t) {
         shared.record(entry, 403, "expired");
         return (StatusCode::FORBIDDEN, "link expired\n").into_response();
+    }
+    if q.from.is_some_and(|t| unix_ms() < t) {
+        shared.record(entry, 403, "too early");
+        return StatusCode::FORBIDDEN.into_response();
     }
     let f = shared.faults().overridden_by(&q.faults);
 
@@ -1656,8 +1690,12 @@ pub(crate) async fn serve(
         Some("none") => None,
         _ => Some(format!("\"{seed:x}-{size:x}-{generation}\"")),
     };
-    // Another server's copy (`node`): its own ETag and date.
-    let node = f.node.unwrap_or(0);
+    // Another server's copy (`node`): its own ETag and date. Behind a CDN of several copies
+    // (`nodes`), the copy is the node's this request landed on.
+    let node = match f.nodes.filter(|k| *k > 1) {
+        Some(k) => (n - 1) % k,
+        None => f.node.unwrap_or(0),
+    };
     let etag = etag.map(|e| match node {
         0 => e,
         n => format!("{}-n{n}\"", e.trim_end_matches('"')),
@@ -1720,6 +1758,12 @@ pub(crate) async fn serve(
     }
     if let Some(etag) = &etag {
         builder = builder.header(header::ETAG, etag);
+    }
+    // The whole file's digest, whatever the range and the copy: the file's version (a stand-in
+    // for its CRC-64), not a hash of the bytes.
+    if f.digest == Some(true) {
+        let crc = seed.rotate_left(17) ^ size.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ generation;
+        builder = builder.header("x-oss-hash-crc64ecma", crc.to_string());
     }
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(
@@ -1928,6 +1972,7 @@ fn split_query(q: &str) -> Result<FileQuery, String> {
     let mut out = FileQuery {
         seed: 0,
         expires: None,
+        from: None,
         uses: None,
         lasts_ms: None,
         link: None,
@@ -1954,6 +1999,7 @@ fn split_query(q: &str) -> Result<FileQuery, String> {
             "expires" => {
                 out.expires = Some(v.parse().map_err(|_| format!("invalid expires `{v}`\n"))?)
             }
+            "from" => out.from = Some(v.parse().map_err(|_| format!("invalid from `{v}`\n"))?),
             "uses" => out.uses = Some(v.parse().map_err(|_| format!("invalid uses `{v}`\n"))?),
             "lasts_ms" => {
                 out.lasts_ms = Some(v.parse().map_err(|_| format!("invalid lasts_ms `{v}`\n"))?)

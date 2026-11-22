@@ -30,7 +30,7 @@ define_class!(
         #[unsafe(method(mdmStatusClick:))]
         fn click(&self, button: &NSStatusBarButton) {
             let event = NSApplication::sharedApplication(self.mtm()).currentEvent();
-            if event.is_some_and(|e| e.r#type() == NSEventType::RightMouseUp
+            if event.as_ref().is_some_and(|e| e.r#type() == NSEventType::RightMouseUp
                 || e.r#type() == NSEventType::LeftMouseUp && e.modifierFlags().contains(NSEventModifierFlags::Control)) {
                 // SAFETY: muda's Menu owns this NSMenu for the lifetime of our action target.
                 let menu = unsafe { &*self.ivars().menu.ns_menu().cast::<NSMenu>() };
@@ -38,12 +38,29 @@ define_class!(
                 menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(0.0,y), Some(button));
             } else {
                 crate::crash::asked();
-                let _ = self.ivars().tx.send(TrayCmd::Toggle);
+                let cmd = if event.as_ref().is_some_and(|e| e.r#type() == NSEventType::LeftMouseUp && e.clickCount() == 2) {
+                    TrayCmd::DoubleClick
+                } else {
+                    TrayCmd::Click(status_position(button))
+                };
+                let _ = self.ivars().tx.send(cmd);
                 self.ivars().ctx.request_ui_pass(egui::ViewportId::ROOT);
             }
         }
     }
 );
+
+// The panel takes top-left screen pixels. Anchor it to the item even for AXPress.
+fn status_position(button: &NSStatusBarButton) -> Option<(i32, i32)> {
+    let window = button.window()?;
+    let frame = window.frame();
+    let primary = objc2_app_kit::NSScreen::screens(button.mtm()).firstObject()?;
+    let scale = window.backingScaleFactor();
+    super::click_at(
+        (frame.origin.x + frame.size.width * 0.5) * scale,
+        (primary.frame().size.height - frame.origin.y) * scale,
+    )
+}
 
 pub(super) struct StatusItem {
     item: Retained<NSStatusItem>,

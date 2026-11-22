@@ -7,6 +7,8 @@
 //! process ids through libc.
 
 #[cfg(target_os = "macos")]
+pub(crate) mod macos_icons;
+#[cfg(target_os = "macos")]
 pub(crate) mod macos_menu;
 
 use std::path::{Path, PathBuf};
@@ -2754,26 +2756,6 @@ pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileic
         let image = NSWorkspace::sharedWorkspace().iconForFileType(&NSString::from_str(&ty));
         raster_mac_image(&image, px)
     })
-}
-
-/// A system symbol rendered on the UI thread. Use only its alpha for both appearances.
-#[cfg(target_os = "macos")]
-pub fn mac_symbol(name: &str, px: u32) -> Option<egui::ColorImage> {
-    use objc2_app_kit::NSImage;
-    use objc2_foundation::NSString;
-    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str(name),
-        None,
-    )?;
-    let crate::fileicons::Native::Rgba { side, rgba, .. } = raster_mac_image(&image, px)? else {
-        return None;
-    };
-    Some(egui::ColorImage::new(
-        [side as usize; 2],
-        rgba.chunks_exact(4)
-            .map(|pixel| egui::Color32::from_white_alpha(pixel[3]))
-            .collect(),
-    ))
 }
 
 #[cfg(target_os = "macos")]

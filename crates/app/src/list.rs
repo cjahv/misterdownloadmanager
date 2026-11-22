@@ -429,6 +429,9 @@ pub struct Row {
     /// How far the download is, 0..=1, when the model knows (a file with a known size): a screen
     /// reader gets it as the row's own progress bar (#1190).
     pub progress: Option<f64>,
+    /// From a private (incognito) window (#1581): the Status cell starts with a mask, and its
+    /// tip, and what a screen reader says of the row, with this (whether the list keeps it).
+    pub private: Option<String>,
 }
 
 #[derive(Default)]
@@ -624,7 +627,7 @@ pub fn show(
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
     let mac = crate::theme::mac_layout();
     let font = winui::tahoma();
-    let content_offset = ((row_h() - 17.0) * 0.5).round();
+    let content_offset = mac_center_offset(row_h(), 17.0);
     // Status at its default width follows the font and the language (#736): a few words to
     // measure, kept by egui from frame to frame.
     if st.status_fits {
@@ -886,7 +889,7 @@ pub fn show(
             &clip,
             font.clone(),
             x0 + 6.0,
-            ct + 15.0 + ((header_h() - 24.0) * 0.5).round(),
+            ct + 15.0 + mac_center_offset(header_h(), 24.0),
             &label,
             TEXT(),
         );
@@ -1002,6 +1005,7 @@ pub fn show(
                 Some(whole) if *c == 3 => whole.as_str(),
                 _ => row.cells[*c].as_str(),
             })
+            .chain(row.private.as_deref())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(", ");
@@ -1117,6 +1121,21 @@ pub fn show(
                         pos2(x0 + 4.0, top + content_offset),
                     );
                     x0 + 22.0
+                } else if *c == STATUS && row.private.is_some() {
+                    // A private window's download (#1581): a mask before its status, in the
+                    // row's text colour, kept to the cell.
+                    let ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
+                    let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
+                    crate::chrome::paint_image(
+                        ui,
+                        &bp.with_clip_rect(screen(cell.intersect(body))),
+                        crate::icons::private_mark(ink),
+                        screen(Rect::from_min_size(
+                            pos2(x0 + 4.0, top + content_offset),
+                            egui::vec2(16.0, 16.0),
+                        )),
+                    );
+                    x0 + 22.0
                 } else {
                     x0 + 6.0
                 };
@@ -1155,13 +1174,17 @@ pub fn show(
                     .map(english)
                     .is_some_and(|h| cell.contains(h))
                 {
-                    let tip = if *c == 3 {
+                    let tip = if *c == STATUS {
+                        // Private window's mark first (#1581), the whole status, the events.
                         let events = status_tip(idx);
-                        match &row.status_whole {
-                            Some(whole) if events.is_empty() => whole.clone(),
-                            Some(whole) => format!("{whole}\n{events}"),
-                            None => events,
-                        }
+                        row.private
+                            .iter()
+                            .chain(&row.status_whole)
+                            .chain(Some(&events))
+                            .filter(|t| !t.is_empty())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     } else if *c == RATE && !row.cells[*c].is_empty() {
                         row.rate_tip.clone().unwrap_or_default()
                     } else {
@@ -1544,6 +1567,14 @@ fn dotted(p: &egui::Painter, l: f32, t: f32, r: f32, b: f32, color: Color32) {
     }
 }
 
+fn mac_center_offset(height: f32, baseline: f32) -> f32 {
+    if crate::theme::mac_layout() {
+        ((height - baseline) * 0.5).round()
+    } else {
+        0.0
+    }
+}
+
 /// A Source chip: a rounded pill, green "Web" or purple "Torrent", white text, at the cell's
 /// left of the cell `x0..x1`. A label too long for the cell (a translation in a narrow column)
 /// is cut with "..."; returns whether it was.
@@ -1581,7 +1612,7 @@ fn chip(
         p,
         font.clone(),
         pill.left() + 6.0,
-        top + 12.0 + ((row_h() - 17.0) * 0.5).round(),
+        top + 12.0 + mac_center_offset(row_h(), 17.0),
         label,
         crate::theme::colors().chip_text,
     );
@@ -1932,6 +1963,7 @@ mod tests {
             queued,
             cells,
             status_whole: None,
+            private: None,
             rate_tip: None,
             progress: None,
         }
@@ -2180,6 +2212,7 @@ mod tests {
                     _ => String::new(),
                 }),
                 status_whole: None,
+                private: None,
                 rate_tip: None,
                 progress: None,
             })
