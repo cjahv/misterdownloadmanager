@@ -13,6 +13,8 @@ use crate::winui::{self, ButtonKind, fill_l as fill, px_l as px, r, text};
 
 use crate::winui::caption::CaptionButton;
 
+mod macos;
+
 /// The drawn title bar's height (#63): Windows only, where the frame is ours
 /// (win32::progress_frame); Linux and macOS keep the system's decorations, which take no buttons
 /// of ours (Wayland even places them itself), so the hide button sits in the tab row there.
@@ -390,7 +392,7 @@ impl Progress {
             id,
             #[cfg(windows)]
             taskbar: crate::win32::TaskbarProgress::new(),
-            details: true,
+            details: !crate::theme::mac_layout(),
             tab: Tab::Status,
             hidden_tabs: Vec::new(),
             ttab: TTab::Files,
@@ -783,10 +785,26 @@ impl Progress {
         // The progress bar: IDM's green on the shared, themed track. After the last byte, while
         // the file is checked or a video joined (#736), it starts again in the accent colour and
         // shows how far that is.
-        let bar = r(lower, 17.0, 180.0, 513.0, 16.0);
-        match finishing_fraction(snap) {
-            Some(f) => winui::meter_in(&p, bar, f as f32, crate::theme::colors().accent),
-            None => winui::meter(&p, bar, drawn.0 as f32),
+        let mac = crate::theme::mac_layout();
+        if mac {
+            let y = if self.tab == Tab::Status {
+                111.0
+            } else {
+                self.status_drop() + 187.0
+            };
+            macos::meter(
+                &p,
+                o,
+                y,
+                finishing_fraction(snap).or(frac.map(|_| drawn.0)),
+                item.status,
+            );
+        } else {
+            let bar = r(lower, 17.0, 180.0, 513.0, 16.0);
+            match finishing_fraction(snap) {
+                Some(f) => winui::meter_in(&p, bar, f as f32, crate::theme::colors().accent),
+                None => winui::meter(&p, bar, drawn.0 as f32),
+            }
         }
 
         let mut action = if hide { Action::Hide } else { Action::None };
@@ -812,23 +830,28 @@ impl Progress {
         let live = item.live_state();
         self.live_stream |=
             live.is_some() || matches!(item.video_helper(), Some(mdm_tools::streams::Helper::Live));
+        let (leading, pause_x, cancel_x) = if mac {
+            (18.0, 367.0, 457.0)
+        } else {
+            (30.0, 311.0, 422.0)
+        };
         let mut row = vec![
             (
                 winui::widest_label(&p, &["<< Hide details", "Show details >>"]),
-                30.0,
+                leading,
                 138.0,
             ),
             (
                 winui::widest_label(&p, pause_labels(self.live_stream)),
-                311.0,
+                pause_x,
                 82.0,
             ),
-            ("Cancel", 422.0, 73.0),
+            ("Cancel", cancel_x, 73.0),
         ];
         if web_page {
             row.insert(1, (open_label, 176.0, 127.0));
         }
-        let placed = winui::button_row(&p, &row, 8.0, 30.0, 200.0);
+        let placed = winui::button_row(&p, &row, 8.0, leading, 200.0);
         let (details_at, open_at, pause_at, cancel_at) = match placed[..] {
             [details, open, pause, cancel] => (details, Some(open), pause, cancel),
             [details, pause, cancel] => (details, None, pause, cancel),
@@ -852,16 +875,13 @@ impl Progress {
         {
             crate::launch::open_page(item.url.as_str());
         }
-        if winui::button(
-            ui,
-            r(lower, details_at.0, 206.0, details_at.1, 22.0),
-            details_label,
-            kind,
-            false,
-            None,
-        )
-        .clicked()
-        {
+        let details_rect = r(lower, details_at.0, 206.0, details_at.1, 22.0);
+        let toggle = if mac {
+            macos::disclosure(ui, details_rect, details_label, self.details)
+        } else {
+            winui::button(ui, details_rect, details_label, kind, false, None)
+        };
+        if toggle.clicked() {
             self.details = !self.details;
         }
         let running = item.status == Status::Downloading;
@@ -901,12 +921,16 @@ impl Progress {
             winui::text_in_window(
                 ui,
                 &p,
-                lower.x + 137.0,
+                lower.x + if mac { 18.0 } else { 137.0 },
                 lower.y + 242.0,
                 crate::i18n::t("Start positions and download progress by connections"),
                 winui::TEXT(),
             );
-            segment_bar(&p, lower, item, drawn.1);
+            if mac {
+                macos::segments(&p, lower, item.size, drawn.1);
+            } else {
+                segment_bar(&p, lower, item, drawn.1);
+            }
             connections(ui, &p, lower, snap);
         }
         action
@@ -1438,6 +1462,18 @@ impl Progress {
                 )],
             ),
         };
+        if crate::theme::mac_layout() {
+            self.mac_status_page(
+                ui,
+                o,
+                item,
+                snap,
+                &status,
+                explained,
+                finishing_fraction(snap).or(frac),
+            );
+            return;
+        }
         fit(
             ui,
             "url",
@@ -1478,17 +1514,7 @@ impl Progress {
                 crate::i18n::mark("Transfer rate"),
                 112.0,
                 135.0,
-                // Every byte in (#736): nothing comes in while the file is checked or joined.
-                if item.status == Status::Downloading && !item.past_last_byte() {
-                    // The limit holding it back beside the speed (#1191).
-                    let rate = model::rate(item.rate());
-                    match self.limit {
-                        Some(limit) => limit.after(&rate),
-                        None => rate,
-                    }
-                } else {
-                    String::new()
-                },
+                self.transfer_rate(item),
             ),
             (
                 crate::i18n::mark("Time left"),
@@ -1554,6 +1580,30 @@ impl Progress {
                 16.0,
             );
         }
+        self.server_row(ui, o, item, snap, column);
+        self.rename_row(ui, p, o, column, item);
+    }
+
+    fn transfer_rate(&self, item: &Item) -> String {
+        if item.status == Status::Downloading && !item.past_last_byte() {
+            // The limit holding it back beside the speed (#1191).
+            let rate = model::rate(item.rate());
+            match self.limit {
+                Some(limit) => limit.after(&rate),
+                None => rate,
+            }
+        } else {
+            String::new()
+        }
+    }
+
+    fn server_row(&self, ui: &Ui, o: Pos2, item: &Item, snap: Option<&Snapshot>, column: f32) {
+        let p = ui.painter();
+        let (left, right, baseline) = if crate::theme::mac_layout() {
+            (238.0, 530.0, 186.0)
+        } else {
+            (33.0, PAGE_TEXT_RIGHT, 161.0)
+        };
         // Where its server is (#140): a file download's, and a video's whose streams MDM's engine
         // downloads (#769; a torrent or a gallery has no single server of MDM's own). As the
         // running download sees it, else as its last run did.
@@ -1563,28 +1613,40 @@ impl Progress {
             .or_else(|| item.server.clone());
         // A video yt-dlp downloads itself (#769): why, in that row.
         if let Some(why) = item.video_helper() {
-            fit(ui, "helper", 33.0, 161.0, &helper_line(&why), winui::TEXT());
+            let line = helper_line(&why);
+            let (rc, cut) = winui::text_fit(
+                p,
+                o.x + left,
+                o.y + baseline,
+                &line,
+                winui::TEXT(),
+                o.x + right,
+            );
+            winui::copyable(ui, rc, "helper", &line, cut);
         } else if item.torrent.is_none()
             && item.gallery.is_none()
             && (item.video.is_none() || seen.is_some())
         {
             // i18n: label before where a download's server is (its country and round trip)
             let label = crate::i18n::t("Server");
-            text(p, o.x + 33.0, o.y + 161.0, label, winui::TEXT());
+            text(p, o.x + left, o.y + baseline, label, winui::TEXT());
             crate::whereis::line(
                 ui,
-                o.x + column.max(33.0 + winui::text_width(p, label).ceil() + 6.0),
-                o.y + 161.0,
-                o.x + PAGE_TEXT_RIGHT,
+                o.x + column.max(left + winui::text_width(p, label).ceil() + 6.0),
+                o.y + baseline,
+                o.x + right,
                 seen.as_ref(),
                 &format!("progress-{}", item.id),
             );
         }
-        self.rename_row(ui, p, o, column, item);
     }
 
     fn rename_row(&mut self, ui: &mut Ui, p: &egui::Painter, o: Pos2, column: f32, item: &Item) {
-        let top = 171.0;
+        let (left, top, right) = if crate::theme::mac_layout() {
+            (18.0, 201.0, 530.0)
+        } else {
+            (33.0, 171.0, PAGE_TEXT_RIGHT)
+        };
         let base = top + 13.0;
         // i18n: noun: label before the deferred new file or folder name in the progress window
         let rename_label = crate::i18n::t("Rename");
@@ -1593,15 +1655,15 @@ impl Progress {
         // i18n: status shown in green beside the Rename box once the new name is saved
         let saved_text = crate::i18n::t("Saved");
 
-        text(p, o.x + 33.0, o.y + base, rename_label, winui::TEXT());
+        text(p, o.x + left, o.y + base, rename_label, winui::TEXT());
 
         let saved_w = winui::text_width(p, saved_text).ceil().max(38.0);
         let btn_w = (winui::text_width(p, crate::i18n::t(confirm_key)) + 20.0)
             .ceil()
             .max(52.0);
-        let saved_x = PAGE_TEXT_RIGHT - saved_w;
+        let saved_x = right - saved_w;
         let btn_x = saved_x - 8.0 - btn_w;
-        let edit_x = column.max(33.0 + winui::text_width(p, rename_label).ceil() + 6.0);
+        let edit_x = column.max(left + winui::text_width(p, rename_label).ceil() + 6.0);
         let edit_w = (btn_x - 6.0 - edit_x).max(100.0);
 
         let disabled_reason = (item.status != Status::Complete)
@@ -2411,25 +2473,31 @@ fn connections_bg() -> Color32 {
 /// The connections table (spec "Connections table"): N. · Downloaded · Info.
 fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>) {
     let outer = r(o, 17.0, 273.0, 513.0, 128.0);
-    winui::solid(p, outer, winui::FIELD_EDGE());
-    fill(
-        p,
-        o.x + 18.0,
-        o.y + 274.0,
-        o.x + 528.0,
-        o.y + 399.0,
-        // A list's background, or the theme's own for this table (Luna's greyish mauve).
-        connections_bg(),
-    );
-    fill(
-        p,
-        o.x + 19.0,
-        o.y + 275.0,
-        o.x + 510.0,
-        o.y + 298.0,
-        winui::LIST_HEADER(),
-    );
-    winui::header_shade(p, o.x + 19.0, o.x + 510.0, o.y + 298.0, false);
+    let mac = crate::theme::mac_layout();
+    if mac {
+        p.rect_filled(outer, 6.0, connections_bg());
+        p.rect_filled(r(o, 18.0, 297.0, 511.0, 1.0), 0.0, winui::GRID());
+    } else {
+        winui::solid(p, outer, winui::FIELD_EDGE());
+        fill(
+            p,
+            o.x + 18.0,
+            o.y + 274.0,
+            o.x + 528.0,
+            o.y + 399.0,
+            // A list's background, or the theme's own for this table (Luna's greyish mauve).
+            connections_bg(),
+        );
+        fill(
+            p,
+            o.x + 19.0,
+            o.y + 275.0,
+            o.x + 510.0,
+            o.y + 298.0,
+            winui::LIST_HEADER(),
+        );
+        winui::header_shade(p, o.x + 19.0, o.x + 510.0, o.y + 298.0, false);
+    }
     // Listed by connection number, like IDM (the engine reports them in arrival order).
     let mut conns: Vec<_> = snap
         .map(|s| s.connections.iter().collect())
@@ -2444,19 +2512,28 @@ fn connections(ui: &mut Ui, p: &egui::Painter, o: Pos2, snap: Option<&Snapshot>)
         .map(|c| winui::text_width(p, &(c.id + 1).to_string()))
         .fold(0.0, f32::max);
     let dx = number_column_extra(widest, winui::text_width(p, number));
-    for x in [48.0 + dx, 148.0 + dx, 498.0] {
-        winui::header_divider(
-            p,
-            o.x + x,
-            o.y + 275.0,
-            o.y + 298.0,
-            crate::theme::colors().header_sep,
-        );
+    if !mac {
+        for x in [48.0 + dx, 148.0 + dx, 498.0] {
+            winui::header_divider(
+                p,
+                o.x + x,
+                o.y + 275.0,
+                o.y + 298.0,
+                crate::theme::colors().header_sep,
+            );
+        }
     }
     // Column titles end in "..." before their column's line, whole on hover; a long "N." starts
     // at the list's edge.
     let head = |x: f32, right: f32, label: &str| {
-        let (rc, cut) = winui::text_fit(p, o.x + x, o.y + 290.0, label, winui::TEXT(), o.x + right);
+        let (rc, cut) = winui::text_fit(
+            p,
+            o.x + x,
+            o.y + 290.0,
+            label,
+            if mac { winui::MUTED() } else { winui::TEXT() },
+            o.x + right,
+        );
         if cut {
             winui::full_on_hover(ui, rc, ("connections-head", x as i32), label);
         }
