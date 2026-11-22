@@ -3737,6 +3737,23 @@ fn set_xattr(path: &Path, name: &str, value: &str) {
     };
 }
 
+/// Accessory apps can focus windows and receive status-item clicks without a Dock tile.
+#[cfg(target_os = "macos")]
+pub fn set_dock_hidden(hidden: bool) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let Some(main) = MainThreadMarker::new() else {
+        return false;
+    };
+    let policy = if hidden {
+        NSApplicationActivationPolicy::Accessory
+    } else {
+        NSApplicationActivationPolicy::Regular
+    };
+    NSApplication::sharedApplication(main).setActivationPolicy(policy)
+}
+
 /// macOS: whether `NSApplication.sharedApplication` is currently the active foreground app with a
 /// visible, non-minimized titled window (#558).
 #[cfg(target_os = "macos")]

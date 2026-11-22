@@ -518,6 +518,14 @@ impl OptionsDialog {
                 &mut s.clipboard_autostart,
                 crate::i18n::mark("Offer to download links copied to the clipboard"),
             ),
+            // Use the inactive Chrome policy row for the Mac-specific preference.
+            #[cfg(target_os = "macos")]
+            (
+                133.0,
+                &mut s.hide_dock_icon,
+                crate::i18n::mark("Hide Dock icon"),
+            ),
+            #[cfg(not(target_os = "macos"))]
             (
                 133.0,
                 &mut s.mv2_extensions,
@@ -567,7 +575,8 @@ impl OptionsDialog {
             // Portable: nothing is written to the registry, so no start with Windows. Manifest 2
             // extensions: an IDM-era Chrome policy with no meaning for MDM's extension (MV3):
             // shown as IDM has it, greyed (D-021).
-            let enabled = !(portable && i == 0) && i != 2 && (i < 6 || tray);
+            let enabled =
+                !(portable && i == 0) && (i != 2 || cfg!(target_os = "macos")) && (i < 6 || tray);
             let check = winui::checkbox_light(ui, o + vec2(30.0, y), v, label, enabled);
             // Where a start with the session leaves the window (#226).
             if i == 0 && enabled && check.hovered() {

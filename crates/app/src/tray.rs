@@ -402,7 +402,11 @@ impl Native {
         #[cfg(target_os = "macos")]
         {
             // MDM_TEST_TRAY_RECT=0: the menu bar gives the item no place.
-            let placed = self.tray.rect().is_some()
+            let placed = self
+                .tray
+                .ns_status_item()
+                .is_some_and(|item| item.isVisible())
+                && self.tray.rect().is_some()
                 && std::env::var_os("MDM_TEST_TRAY_RECT").is_none_or(|v| v != "0");
             if self.answer.replace(Some(placed)) != Some(placed) {
                 tracing::info!("tray icon: placed {placed}");

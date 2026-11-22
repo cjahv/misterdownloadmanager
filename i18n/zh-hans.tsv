@@ -2259,6 +2259,8 @@
 #. what the computer does when the queue is done (verb: hibernate it)
 #, machine
 	Hibernate	休眠
+#. general options checkbox on macOS
+	Hide Dock icon	隐藏 Dock 图标
 #. message or event log entry in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 #, machine

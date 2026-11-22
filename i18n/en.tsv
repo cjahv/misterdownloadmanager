@@ -1705,6 +1705,8 @@
 #. message or event log entry in the main window
 #. & marks the keyboard shortcut letter: keep one & before a letter of the translation
 	Hide &categories	Hide &categories
+#. text in the Options window
+	Hide Dock icon	Hide Dock icon
 #. button in a download's progress window
 	Hide tab	Hide tab
 #. text in a download's progress window; text in standard windows

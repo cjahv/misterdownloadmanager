@@ -1551,6 +1551,9 @@ pub struct App {
     /// The notification-area icon (created on the first frame), the window hidden in it, and
     /// a real exit under way (closing the window otherwise only hides it, as IDM does).
     tray: Option<crate::tray::Tray>,
+    /// The policy AppKit actually accepted, independent of the saved preference.
+    #[cfg(target_os = "macos")]
+    dock_hidden: bool,
     /// Linux: the icon being made beside the window (#828: its library waits for the session
     /// bus); `tray` once it is.
     #[cfg(target_os = "linux")]
@@ -2278,6 +2281,8 @@ impl App {
             limit_notice: None,
             batch_clip: None,
             tray: None,
+            #[cfg(target_os = "macos")]
+            dock_hidden: false,
             #[cfg(target_os = "linux")]
             tray_setup: None,
             tray_limiter: None,
@@ -4913,6 +4918,17 @@ impl App {
                 crate::tray::Came::Failed => self.tray_setup = None,
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            let hide = self.settings.hide_dock_icon
+                && self
+                    .tray
+                    .as_ref()
+                    .is_some_and(|tray| tray.icon() == crate::tray::Icon::There);
+            if hide != self.dock_hidden && crate::unix::set_dock_hidden(hide) {
+                self.dock_hidden = hide;
+            }
+        }
         if !crate::offscreen() {
             let spec = self
                 .options
@@ -4997,8 +5013,18 @@ impl App {
             use crate::tray::TrayCmd;
             tracing::info!("tray: {c:?}");
             let cmd = match c {
+                #[cfg(target_os = "macos")]
+                TrayCmd::Toggle if self.dock_hidden => {
+                    self.show_window(ctx);
+                    crate::unix::macos_activate_app();
+                    continue;
+                }
                 TrayCmd::Show => {
                     self.show_window(ctx);
+                    #[cfg(target_os = "macos")]
+                    if self.dock_hidden {
+                        crate::unix::macos_activate_app();
+                    }
                     continue;
                 }
                 TrayCmd::Toggle => {
@@ -5058,7 +5084,7 @@ impl App {
             let keep = self.settings.close_to_tray;
             let tray = self.tray.is_some();
             #[cfg(target_os = "macos")]
-            let dock = crate::unix::open_events::dock_reopens();
+            let dock = !self.dock_hidden && crate::unix::open_events::dock_reopens();
             #[cfg(not(target_os = "macos"))]
             let dock = false;
             // The shell's answer, only when it matters (macOS: asked afresh).

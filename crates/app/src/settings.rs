@@ -308,6 +308,8 @@ pub struct Settings {
     /// closing quits). On by default, for existing lists too, in every copy. Only where a tray
     /// shows MDM's icon.
     pub close_to_tray: bool,
+    /// On macOS, keep only the menu bar item while it is available.
+    pub hide_dock_icon: bool,
     /// General: a private (incognito) window's downloads are written to the saved list like any
     /// other, so they survive MDM closing or restarting (their cookies stay in memory, as every
     /// download's do). Off by default: they live in memory only, as the browser keeps them.
@@ -614,6 +616,7 @@ impl Default for Settings {
             clipboard_autostart: true,
             minimize_to_tray: true,
             close_to_tray: true,
+            hide_dock_icon: false,
             keep_private_downloads: false,
             show_hide_hotkey: String::new(),
             mv2_extensions: true,
