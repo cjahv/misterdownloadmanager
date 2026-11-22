@@ -74,7 +74,9 @@ pub fn bar(
         track.width()
     };
     let max = (total - page).max(0.0);
-    let avail = (len - 2.0 * THICK).max(0.0);
+    let mac = crate::theme::mac_layout();
+    let end = if mac { 0.0 } else { THICK };
+    let avail = (len - 2.0 * end).max(0.0);
     // Win32: MulDiv(avail, page, total), rounded; never smaller than a usable grip.
     let thumb = if total > 0.0 {
         (avail * page / total)
@@ -84,12 +86,11 @@ pub fn bar(
         avail
     };
     let start = |pos: f32| {
-        THICK
-            + if max > 0.0 {
-                ((avail - thumb) * pos / max).round()
-            } else {
-                0.0
-            }
+        end + if max > 0.0 {
+            ((avail - thumb) * pos / max).round()
+        } else {
+            0.0
+        }
     };
 
     let resp = ui.interact(track, id, crate::winui::pointer_drag());
@@ -123,7 +124,7 @@ pub fn bar(
         && let Some(q) = resp.interact_pointer_pos()
         && avail > thumb
     {
-        *pos = (along(q) - grab - THICK) / (avail - thumb) * max;
+        *pos = (along(q) - grab - end) / (avail - thumb) * max;
     }
     if !resp.is_pointer_button_down_on() {
         ui.ctx().data_mut(|d| d.remove::<f32>(grab_id));
@@ -137,9 +138,9 @@ pub fn bar(
     {
         let u = along(q);
         let s = start(*pos);
-        *pos += if u < THICK {
+        *pos += if u < end {
             -line
-        } else if u >= len - THICK {
+        } else if u >= len - end {
             line
         } else if u < s {
             -page
@@ -151,6 +152,63 @@ pub fn bar(
     }
     *pos = pos.clamp(0.0, max);
 
+    if mac {
+        #[cfg(target_os = "macos")]
+        if max > 0.0 && crate::unix::macos_overlay_scrollbars() {
+            let now = ui.input(|input| input.time);
+            let engaged = grabbing || resp.hovered();
+            let last = ui.data_mut(|data| {
+                let (previous, last) =
+                    data.get_temp_mut_or_insert_with(id.with("scroll activity"), || (*pos, now));
+                if *pos != *previous || engaged {
+                    *previous = *pos;
+                    *last = now;
+                }
+                *last
+            });
+            if !engaged {
+                let remaining = 0.8 - (now - last);
+                if remaining <= 0.0 {
+                    return *pos != before;
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+            }
+        }
+        if max > 0.0 && thumb > 0.0 {
+            let center = track.center();
+            let half = if grabbing || resp.hovered() { 3.5 } else { 2.5 };
+            let s = start(*pos);
+            let knob = if vertical {
+                Rect::from_min_max(
+                    pos2(center.x - half, track.top() + s),
+                    pos2(center.x + half, track.top() + s + thumb),
+                )
+            } else {
+                let left = if from_right {
+                    track.right() - s - thumb
+                } else {
+                    track.left() + s
+                };
+                Rect::from_min_max(
+                    pos2(left, center.y - half),
+                    pos2(left + thumb, center.y + half),
+                )
+            };
+            p.rect_filled(
+                knob,
+                half,
+                if grabbing {
+                    INK_PRESSED()
+                } else if resp.hovered() {
+                    INK_HOT()
+                } else {
+                    INK_C()
+                },
+            );
+        }
+        return *pos != before;
+    }
     // ---- paint -----------------------------------------------------------------------------
     fill(
         &p,
@@ -348,6 +406,9 @@ fn luna_button(p: &egui::Painter, rc: Rect, face: Color32) {
 /// The 17 × 17 square where a vertical and a horizontal bar meet, its top-left at English
 /// (`x`, `y`) — at the bottom-left in RTL, where the vertical bar is.
 pub fn corner(ui: &Ui, x: f32, y: f32) {
+    if crate::theme::mac_layout() {
+        return;
+    }
     let x = crate::winui::at(pos2(x, y), THICK).x;
     fill(
         ui.painter(),

@@ -6,6 +6,13 @@
 //! crash reports (at the end): signals and Mach exceptions through crash-handler, thread and
 //! process ids through libc.
 
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_choices;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_icons;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_menu;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -2736,10 +2743,9 @@ fn icon_theme(kde: bool) -> Option<String> {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileicons::Native> {
-    use crate::fileicons::{Native, What};
-    use objc2::AllocAnyThread as _;
-    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSWorkspace};
-    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use crate::fileicons::What;
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
     // An extension, or a type identifier where there is none.
     let ty = match what {
         // Finder has no open folder of its own: its folder.
@@ -2747,15 +2753,26 @@ pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileic
         What::File(Some(ext)) => ext.clone(),
         What::File(None) => "public.data".to_string(),
     };
-    let side = px.clamp(1, 1024) as usize;
     objc2::rc::autoreleasepool(|_| {
         #[allow(deprecated)] // iconForContentType needs a UTType; this takes the extension as is.
         let image = NSWorkspace::sharedWorkspace().iconForFileType(&NSString::from_str(&ty));
-        // SAFETY: no planes, so the bitmap allocates and owns its pixels: 8-bit RGBA, packed rows
-        // (0 lets it choose the row length and bits per pixel). The colour space name is AppKit's
-        // own constant.
-        let rep = unsafe {
-            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+        raster_mac_image(&image, px)
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn raster_mac_image(image: &objc2_app_kit::NSImage, px: u32) -> Option<crate::fileicons::Native> {
+    use crate::fileicons::Native;
+    use objc2::AllocAnyThread as _;
+    use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let side = px.clamp(1, 1024) as usize;
+    // SAFETY: no planes, so the bitmap allocates and owns its pixels: 8-bit RGBA, packed rows
+    // (0 lets it choose the row length and bits per pixel). The colour space name is AppKit's
+    // own constant.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
                 NSBitmapImageRep::alloc(),
                 std::ptr::null_mut(),
                 side as isize,
@@ -2768,31 +2785,34 @@ pub fn file_icon(what: &crate::fileicons::What, px: u32) -> Option<crate::fileic
                 0,
                 0,
             )
-        }?;
-        let gc = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
-        NSGraphicsContext::saveGraphicsState_class();
-        NSGraphicsContext::setCurrentContext(Some(&gc));
-        let edge = side as f64;
-        image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(edge, edge)));
-        gc.flushGraphics();
-        NSGraphicsContext::restoreGraphicsState_class();
-        let row = rep.bytesPerRow() as usize;
-        let data = rep.bitmapData();
-        if data.is_null() || row < side * 4 {
-            return None;
-        }
-        let mut rgba = Vec::with_capacity(side * side * 4);
-        for y in 0..side {
-            // SAFETY: the bitmap holds `side` rows of `row` bytes, alive while `rep` is.
-            rgba.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(data.add(y * row), side * 4)
-            });
-        }
-        Some(Native::Rgba {
-            side: side as u32,
-            rgba,
-            premultiplied: true,
-        })
+    }?;
+    let gc = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&gc));
+    let edge = side as f64;
+    let size = image.size();
+    let scale = edge / size.width.max(size.height).max(1.0);
+    let size = NSSize::new(size.width * scale, size.height * scale);
+    image.drawInRect(NSRect::new(
+        NSPoint::new((edge - size.width) / 2.0, (edge - size.height) / 2.0),
+        size,
+    ));
+    gc.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let row = rep.bytesPerRow() as usize;
+    let data = rep.bitmapData();
+    if data.is_null() || row < side * 4 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(side * side * 4);
+    for y in 0..side {
+        // SAFETY: the bitmap holds `side` rows of `row` bytes, alive while `rep` is.
+        rgba.extend_from_slice(unsafe { std::slice::from_raw_parts(data.add(y * row), side * 4) });
+    }
+    Some(Native::Rgba {
+        side: side as u32,
+        rgba,
+        premultiplied: true,
     })
 }
 
@@ -3735,6 +3755,83 @@ fn set_xattr(path: &Path, name: &str, value: &str) {
             0,
         )
     };
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_overlay_scrollbars() -> bool {
+    use objc2_app_kit::{NSScroller, NSScrollerStyle};
+    objc2::MainThreadMarker::new()
+        .is_some_and(|mtm| NSScroller::preferredScrollerStyle(mtm) == NSScrollerStyle::Overlay)
+}
+
+/// Accessory apps can focus windows and receive status-item clicks without a Dock tile.
+#[cfg(target_os = "macos")]
+pub fn set_dock_hidden(hidden: bool) -> bool {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let Some(main) = MainThreadMarker::new() else {
+        return false;
+    };
+    let policy = if hidden {
+        NSApplicationActivationPolicy::Accessory
+    } else {
+        NSApplicationActivationPolicy::Regular
+    };
+    NSApplication::sharedApplication(main).setActivationPolicy(policy)
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_app_hidden() -> bool {
+    objc2::MainThreadMarker::new()
+        .is_some_and(|main| objc2_app_kit::NSApplication::sharedApplication(main).isHidden())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_main_window(
+    app: &objc2_app_kit::NSApplication,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    let title = objc2_foundation::NSString::from_str(crate::MAIN_TITLE);
+    app.windows().iter().find(|window| window.title() == title)
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_only_main_window_visible() -> bool {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(main);
+    let title = objc2_foundation::NSString::from_str(crate::MAIN_TITLE);
+    let windows = app.windows();
+    let mut visible = windows.iter().filter(|w| {
+        w.isVisible()
+            && w.styleMask()
+                .contains(objc2_app_kit::NSWindowStyleMask::Titled)
+    });
+    visible.next().is_some_and(|w| w.title() == title) && visible.next().is_none()
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_hide_app() {
+    if let Some(main) = objc2::MainThreadMarker::new() {
+        objc2_app_kit::NSApplication::sharedApplication(main).hide(None);
+    }
+}
+
+/// Restore focus after switching back to a regular application with a system menu.
+#[cfg(target_os = "macos")]
+pub fn macos_show_main_window() {
+    let Some(main) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(main);
+    if let Some(window) = macos_main_window(&app)
+        && (!app.isActive() || !window.isKeyWindow() || !window.isVisible() || app.isHidden())
+    {
+        macos_activate_app();
+        window.makeKeyAndOrderFront(None);
+        window.orderFrontRegardless();
+    }
 }
 
 /// macOS: whether `NSApplication.sharedApplication` is currently the active foreground app with a

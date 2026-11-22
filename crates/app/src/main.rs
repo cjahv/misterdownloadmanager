@@ -76,6 +76,7 @@ mod torrentfiles;
 mod torrents;
 mod transfer;
 mod tray;
+mod traypanel;
 #[cfg(unix)]
 mod unix;
 mod update;
@@ -419,6 +420,13 @@ fn app() -> eframe::Result {
     // Started by an update (update.rs): the old copy may still be closing; this one waits for
     // it rather than handing it anything.
     let after_update = args.iter().any(|a| a.eq_ignore_ascii_case(update::UPDATED));
+    // A second launch brings the running copy's window to the front: this launch, just started
+    // by the user, passes its right to the foreground on (as the browser's native host does), so
+    // Windows lets it come forward with no trick (#1645).
+    #[cfg(windows)]
+    if !after_update && let Some(pid) = mdm_ipc::app_pid() {
+        win32::allow_foreground(pid);
+    }
     if !after_update
         && (mdm_ipc::send(&cmd.clone().unwrap_or_default()).is_ok()
             || cmd.as_ref().is_some_and(|c| c.exit))
@@ -632,7 +640,11 @@ fn app() -> eframe::Result {
                 true
             });
         }
-        Shared(app)
+        Shared {
+            #[cfg(target_os = "macos")]
+            menu: unix::macos_menu::MacMenu::new(&app, &cc.egui_ctx),
+            app,
+        }
     });
     crash::clean_exit();
     result
@@ -640,7 +652,11 @@ fn app() -> eframe::Result {
 
 /// The app as eframe runs it, shared with the window's own messages: the session's end saves
 /// through it between two frames (`end_session`).
-struct Shared(std::rc::Rc<std::cell::RefCell<app::App>>);
+struct Shared {
+    app: std::rc::Rc<std::cell::RefCell<app::App>>,
+    #[cfg(target_os = "macos")]
+    menu: unix::macos_menu::MacMenu,
+}
 
 impl eframe::App for Shared {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -649,15 +665,17 @@ impl eframe::App for Shared {
         // anything, and the process ends, as logind would end it.
         #[cfg(target_os = "linux")]
         if let Some(why) = unix::session_ending() {
-            drop(save_for_session_end(&self.0, why));
+            drop(save_for_session_end(&self.app, why));
             mdm_crash::logs::flush(LOG_AT_THE_END);
             unix::exit_now(0);
         }
-        eframe::App::logic(&mut *self.0.borrow_mut(), ctx, frame);
+        #[cfg(target_os = "macos")]
+        self.menu.tick(&self.app);
+        eframe::App::logic(&mut *self.app.borrow_mut(), ctx, frame);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        eframe::App::ui(&mut *self.0.borrow_mut(), ui, frame);
+        eframe::App::ui(&mut *self.app.borrow_mut(), ui, frame);
     }
 }
 

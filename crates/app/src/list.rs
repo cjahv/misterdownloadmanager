@@ -139,6 +139,20 @@ pub const DEFAULT_WIDTHS: [f32; COLS] = [
 /// Added after Last Try Date.
 const DEFAULT_ORDER: [usize; COLS] = [SOURCE, 0, 1, 2, 3, 4, 5, UPLOAD, PEERS, RATIO, 6, ADDED, 7];
 
+const MAC_ORDER: [usize; COLS] = [0, 3, 2, 5, SOURCE, 4, 1, UPLOAD, PEERS, RATIO, 6, ADDED, 7];
+const MAC_FILENAME_WIDTH: f32 = 225.0;
+const QUEUE: usize = 1;
+const MAC_QUEUE_WIDTH: f32 = 80.0;
+const MAC_FILTER_ROOM: f32 = 20.0;
+
+fn header_title(col: usize) -> &'static str {
+    if col == QUEUE && crate::theme::mac_layout() {
+        crate::i18n::tc("column", "Queue")
+    } else {
+        crate::i18n::tc("column", TITLES[col])
+    }
+}
+
 const MIN_WIDTH: f32 = 16.0;
 /// How far from a separator a press grabs it for resizing.
 const GRIP: f32 = 4.0;
@@ -224,8 +238,8 @@ pub struct ListState {
     pub scroll_to: Option<usize>,
     /// Column filters, by data slot (kept for the session).
     pub filters: Vec<Option<Filter>>,
-    /// The open filter box: column and its top-left.
-    filter_open: Option<(usize, Pos2)>,
+    /// Column whose filter is being edited, independently of the applied criteria.
+    filter_open: Option<usize>,
     /// The sideways scroll when it opened (it closes when the list moves).
     filter_hscroll: f32,
     /// A selection box being dragged: where it started (x in content, y in rows' space) and
@@ -246,9 +260,17 @@ pub struct ListState {
 
 impl Default for ListState {
     fn default() -> Self {
+        let mut widths = DEFAULT_WIDTHS;
+        let order = if crate::theme::mac_layout() {
+            widths[0] = MAC_FILENAME_WIDTH;
+            widths[QUEUE] = MAC_QUEUE_WIDTH;
+            MAC_ORDER
+        } else {
+            DEFAULT_ORDER
+        };
         ListState {
-            order: DEFAULT_ORDER.to_vec(),
-            widths: DEFAULT_WIDTHS,
+            order: order.to_vec(),
+            widths,
             visible: [true; COLS],
             sort: None,
             scroll: 0.0,
@@ -282,6 +304,18 @@ pub struct Layout {
     /// in a layout saved before #736, where a Status at IDM's 65 px means it was never resized.
     #[serde(default)]
     pub status_fits: Option<bool>,
+}
+
+#[cfg(target_os = "macos")]
+impl Layout {
+    pub fn upgrade_mac_defaults(&mut self) {
+        if self.order == DEFAULT_ORDER {
+            self.order = MAC_ORDER.to_vec();
+        }
+        if self.widths.first() == Some(&DEFAULT_WIDTHS[0]) {
+            self.widths[0] = MAC_FILENAME_WIDTH;
+        }
+    }
 }
 
 impl ListState {
@@ -368,6 +402,10 @@ impl ListState {
             self.widths[c] = l.widths.get(c).copied().unwrap_or(*default).max(MIN_WIDTH);
             self.visible[c] = l.visible.get(c).copied().unwrap_or(true);
         }
+        // Layouts saved with the old icon-only queue column get the named Mac header.
+        if crate::theme::mac_layout() && self.widths[QUEUE] == DEFAULT_WIDTHS[QUEUE] {
+            self.widths[QUEUE] = MAC_QUEUE_WIDTH;
+        }
         // Status at IDM's 65 px, as every list was saved before it widened (#736), was never
         // made wider or narrower: the new default, fitted to the font when the list is drawn. A
         // width someone chose stays.
@@ -407,6 +445,9 @@ pub struct Row {
     /// How far the download is, 0..=1, when the model knows (a file with a known size): a screen
     /// reader gets it as the row's own progress bar (#1190).
     pub progress: Option<f64>,
+    /// From a private (incognito) window (#1581): the Status cell starts with a mask, and its
+    /// tip, and what a screen reader says of the row, with this (whether the list keeps it).
+    pub private: Option<String>,
 }
 
 #[derive(Default)]
@@ -451,7 +492,11 @@ fn keyboard(
     out: &mut ListResponse,
 ) -> bool {
     let n = rows.len();
-    if n == 0 || st.menu_open || ui.ctx().memory(|m| m.focused().is_some()) {
+    if n == 0
+        || st.menu_open
+        || st.filter_open.is_some()
+        || ui.ctx().memory(|m| m.focused().is_some())
+    {
         return false;
     }
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
@@ -600,7 +645,9 @@ pub fn show(
     winui::solid(&p, screen(outer), FRAME());
     fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
+    let mac = crate::theme::mac_layout();
     let font = winui::tahoma();
+    let content_offset = mac_center_offset(row_h(), 17.0);
     // Status at its default width follows the font and the language (#736): a few words to
     // measure, kept by egui from frame to frame.
     if st.status_fits {
@@ -617,7 +664,11 @@ pub fn show(
         &shown_now,
         crate::i18n::cjk(),
         st.sort,
-        |c| winui::text_width_font(&p, font.clone(), crate::i18n::tc("column", TITLES[c])),
+        |c| {
+            // The shared sizing rule allows 14 points for a filter. Mac uses a wider target.
+            winui::text_width_font(&p, font.clone(), header_title(c))
+                + if mac { MAC_FILTER_ROOM - 14.0 } else { 0.0 }
+        },
     );
 
     // Scroll bars (notes/ui-spec/scrollbars.md), decided like Win32: each one shows when the
@@ -627,10 +678,12 @@ pub fn show(
     let rows_h = rows.len() as f32 * row_h();
     let menu_key = keyboard(ui, st, rows, focus, client_h, &mut out);
     let (mut need_v, mut need_h) = (false, false);
+    let can_scroll_columns =
+        !rows.is_empty() || st.filter_open.is_some() || st.filters.iter().any(Option::is_some);
     for _ in 0..2 {
-        // An empty list has nothing to scroll to (its empty state is centred in the view).
-        need_h =
-            !rows.is_empty() && content_w > client_w - if need_v { scrollbar::THICK } else { 0.0 };
+        // A filter can hide all rows while its header is scrolled into view.
+        need_h = can_scroll_columns
+            && content_w > client_w - if need_v { scrollbar::THICK } else { 0.0 };
         need_v = rows_h > client_h - header_h() - if need_h { scrollbar::THICK } else { 0.0 };
     }
     // Inclusive right edge of the header and rows, and bottom of the rows.
@@ -687,6 +740,7 @@ pub fn show(
             None => cols
                 .iter()
                 .find(|(_, x0, x1)| pp.x >= *x0 && pp.x <= *x1)
+                .filter(|(col, x0, x1)| !funnel_rect(st, *col, *x0, *x1, ct).contains(pp))
                 .map(|(col, _, _)| HeaderDrag::Press {
                     col: *col,
                     x0: pp.x,
@@ -726,39 +780,26 @@ pub fn show(
         st.drag = None;
     }
     // A click on a header's funnel opens its filter box instead of sorting.
-    let funnel_hit = |st: &ListState, pp: Pos2| {
-        cols.iter()
-            .find(|(c, x0, x1)| funnel_rect(st, *c, *x0, *x1, ct).contains(pp))
-            .map(|(c, x0, x1)| (*c, funnel_rect(st, *c, *x0, *x1, ct).left_bottom(), *x1))
-    };
-    let funnel_click = hresp
+    let clicked = hresp
         .clicked()
         .then_some(pointer)
         .flatten()
-        .and_then(|pp| funnel_hit(st, pp));
-    if let Some((col, at, _)) = funnel_click {
-        st.filter_open = match st.filter_open {
-            Some((c, _)) if c == col => None,
-            _ => Some((
-                col,
-                pos2(at.x.min(outer.right() - FILTER_W), ct + header_h()),
-            )),
-        };
-        st.filter_hscroll = st.hscroll;
-    }
-    if hresp.clicked()
-        && funnel_click.is_none()
-        && let Some(pp) = pointer
-        && near_sep(pp.x).is_none()
-        && let Some((col, ..)) = cols.iter().find(|(_, x0, x1)| pp.x >= *x0 && pp.x <= *x1)
+        .filter(|pp| near_sep(pp.x).is_none());
+    if let Some(pp) = clicked
+        && let Some(&(col, x0, x1)) = cols.iter().find(|(_, x0, x1)| pp.x >= *x0 && pp.x <= *x1)
     {
-        // Ascending → descending → unsorted (order of addition).
-        st.sort = match st.sort {
-            Some((c, true)) if c == *col => Some((c, false)),
-            Some((c, false)) if c == *col => None,
-            _ => Some((*col, true)),
-        };
-        out.sort_changed = true;
+        if funnel_rect(st, col, x0, x1, ct).contains(pp) {
+            st.filter_open = (st.filter_open != Some(col)).then_some(col);
+            st.filter_hscroll = st.hscroll;
+        } else {
+            // Ascending → descending → unsorted (order of addition).
+            st.sort = match st.sort {
+                Some((c, true)) if c == col => Some((c, false)),
+                Some((c, false)) if c == col => None,
+                _ => Some((col, true)),
+            };
+            out.sort_changed = true;
+        }
     }
     if hresp.secondary_clicked() {
         out.header_context = ui.ctx().pointer_interact_pos();
@@ -771,10 +812,15 @@ pub fn show(
     fill(&p, cl, ct, rr, ct + header_h() - 1.0, HEADER_BG());
     winui::header_shade(&p, cl, rr, ct + header_h() - 1.0, false);
     for (c, x0, x1) in &cols {
-        let hovered = hresp
-            .hover_pos()
-            .map(english)
-            .is_some_and(|h| h.x >= *x0 && h.x <= *x1 && st.drag.is_none());
+        let hovered = hresp.hover_pos().map(english).is_some_and(|h| {
+            h.x >= *x0 && h.x <= *x1 && near_sep(h.x).is_none() && st.drag.is_none()
+        });
+        let roomy = x1 - x0 >= 44.0;
+        let filtered = st.filters[*c].is_some();
+        let open = st.filter_open == Some(*c);
+        let fr = funnel_rect(st, *c, *x0, *x1, ct);
+        let filter_hot = hovered && pointer.is_some_and(|pp| fr.contains(pp));
+        let show_filter = filtered || open || filter_hot || (roomy && (!mac || hovered));
         // The column under the pointer, and pressed while the mouse button is held on it (as
         // Windows' headers); the shared tint (winui::subtle_fill).
         let state = match (hovered, hresp.is_pointer_button_down_on()) {
@@ -797,12 +843,18 @@ pub fn show(
                 tint.unwrap_or(SORTED_BG()),
             );
             // At the cell's right edge, vertically centred in the header.
-            let cx = x1 - 9.0;
+            let cx = if mac && roomy {
+                x1 - MAC_FILTER_ROOM - 8.0
+            } else {
+                x1 - 9.0
+            };
             let mid = ct + (header_h() / 2.0).floor() - 2.0;
-            for i in 0..4 {
-                let y = mid + if asc { i as f32 } else { 3.0 - i as f32 };
-                let half = i as f32;
-                fill(&p, cx - half, y, cx + half, y, SORT_ARROW());
+            if roomy || !show_filter {
+                for i in 0..4 {
+                    let y = mid + if asc { i as f32 } else { 3.0 - i as f32 };
+                    let half = i as f32;
+                    fill(&p, cx - half, y, cx + half, y, SORT_ARROW());
+                }
             }
         } else if let Some(t) = tint {
             fill(&p, *x0, ct, x1 - 1.0, ct + header_h() - 1.0, t);
@@ -811,20 +863,22 @@ pub fn show(
         if state != winui::State::Normal || st.sort.is_some_and(|(sc, _)| sc == *c) {
             winui::header_shade(&p, *x0, x1 - 1.0, ct + header_h() - 1.0, hovered);
         }
-        winui::header_divider(&p, *x1, ct, ct + header_h() - 1.0, HEADER_SEP());
-        let mut arrow_room = if st.sort.is_some_and(|(sc, _)| sc == *c) {
-            14.0
-        } else {
-            0.0
-        };
-        // The funnel (user, 2026-10-30): always shown, faint; darker under the pointer or while
-        // its box is open; blue while the column is filtered. A column too narrow for a label
-        // and the funnel (Q) shows it only under the pointer.
-        let filtered = st.filters[*c].is_some();
-        let open = st.filter_open.is_some_and(|(fc, _)| fc == *c);
-        let roomy = x1 - x0 >= 44.0;
-        if roomy || filtered || hovered || open {
-            let fr = funnel_rect(st, *c, *x0, *x1, ct);
+        let inset = if mac { 6.0 } else { 0.0 };
+        winui::header_divider(
+            &p,
+            *x1,
+            ct + inset,
+            ct + header_h() - inset - 1.0,
+            HEADER_SEP(),
+        );
+        if show_filter {
+            if mac && (filter_hot || open) {
+                p.rect_filled(
+                    screen(fr.shrink2(egui::vec2(0.0, 4.0))),
+                    4.0,
+                    crate::theme::colors().subtle_pressed,
+                );
+            }
             let color = if filtered {
                 FILTER_ON()
             } else if hovered || open {
@@ -832,33 +886,50 @@ pub fn show(
             } else {
                 SORT_ARROW().gamma_multiply(0.45)
             };
-            if !roomy {
-                p.rect_filled(screen(fr), crate::theme::metrics().part_radius, HEADER_BG());
-            }
             funnel(&p, fr, color);
-            if roomy {
-                arrow_room += 14.0;
-            }
         }
-        let full = crate::i18n::tc("column", TITLES[*c]);
-        let label = winui::ellipsize(&p, &font, full, x1 - x0 - 10.0 - arrow_room);
-        // A cut title shows whole under the pointer; the one-letter Q says what it is.
-        if hovered && st.drag.is_none() {
-            let tip = if TITLES[*c] == "Q" {
-                // i18n: tooltip of the narrow "Q" column's title
-                Some(crate::i18n::tc("column", "Queue"))
+        let sorted = st.sort.is_some_and(|(sc, _)| sc == *c);
+        let filter_room = if mac { MAC_FILTER_ROOM } else { 14.0 };
+        let reserved = if roomy { filter_room } else { 0.0 } + if sorted { 14.0 } else { 0.0 };
+        let full = header_title(*c);
+        let compact_queue = !roomy && *c == QUEUE;
+        let text_x = x0 + if compact_queue { 2.0 } else { 6.0 };
+        let available = x1 - text_x - 2.0 - reserved;
+        let caption = if compact_queue {
+            crate::i18n::tc("column", "Q")
+        } else {
+            full
+        };
+        let label = if !roomy && (show_filter || sorted) {
+            String::new()
+        } else {
+            winui::ellipsize(&p, &font, caption, available)
+        };
+        if hovered && st.filter_open.is_none() {
+            let title = if *c == QUEUE {
+                crate::i18n::tc("column", "Queue")
             } else {
-                (label != full).then_some(full)
+                full
             };
-            if let Some(tip) = tip {
+            if filter_hot {
+                let tip = crate::i18n::fmt(crate::i18n::t("Filter {column}"), &[("column", title)]);
                 hresp.clone().on_hover_text_at_pointer(tip);
+            } else if label != title {
+                hresp.clone().on_hover_text_at_pointer(title);
             }
         }
         let clip = p.with_clip_rect(screen(Rect::from_x_y_ranges(
             *x0..=*x1,
             ct..=ct + header_h(),
         )));
-        text_font(&clip, font.clone(), x0 + 6.0, ct + 15.0, &label, TEXT());
+        text_font(
+            &clip,
+            font.clone(),
+            text_x,
+            ct + 15.0 + mac_center_offset(header_h(), 24.0),
+            &label,
+            TEXT(),
+        );
     }
 
     // ---- body ------------------------------------------------------------------------------
@@ -971,6 +1042,7 @@ pub fn show(
                 Some(whole) if *c == 3 => whole.as_str(),
                 _ => row.cells[*c].as_str(),
             })
+            .chain(row.private.as_deref())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(", ");
@@ -1042,7 +1114,18 @@ pub fn show(
                 // pixel), in the fill's inverse on a selected row. Both modes alike.
                 let (right, bottom) = (last_right - 1.0, top + row_h() - 2.0);
                 if sel {
-                    fill(&bp, cl, top, right, bottom, SELECTED());
+                    if mac {
+                        bp.rect_filled(
+                            screen(Rect::from_min_max(
+                                pos2(cl + 2.0, top + 1.0),
+                                pos2(right - 1.0, bottom),
+                            )),
+                            6.0,
+                            SELECTED(),
+                        );
+                    } else {
+                        fill(&bp, cl, top, right, bottom, SELECTED());
+                    }
                 }
                 if has_focus {
                     let dot = if sel {
@@ -1050,7 +1133,20 @@ pub fn show(
                     } else {
                         TEXT()
                     };
-                    dotted(&bp, cl, top, right, bottom, dot);
+                    if mac {
+                        let rc = screen(Rect::from_min_max(
+                            pos2(cl + 2.0, top + 1.0),
+                            pos2(right - 1.0, bottom),
+                        ));
+                        bp.rect_stroke(
+                            rc,
+                            6.0,
+                            egui::Stroke::new(1.5, dot),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else {
+                        dotted(&bp, cl, top, right, bottom, dot);
+                    }
                 }
             } else if picked {
                 // Unfocused (Find, Properties, a menu has the keys): still shown, in the inactive
@@ -1068,7 +1164,27 @@ pub fn show(
             for (c, x0, x1) in &cols {
                 // The file-type icon sits in the File Name column, wherever it is.
                 let tx = if *c == 0 {
-                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, top));
+                    icons.paint_in(
+                        ui,
+                        &bp,
+                        row.icon.clone(),
+                        pos2(x0 + 4.0, top + content_offset),
+                    );
+                    x0 + 22.0
+                } else if *c == STATUS && row.private.is_some() {
+                    // A private window's download (#1581): a mask before its status, in the
+                    // row's text colour, kept to the cell.
+                    let ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
+                    let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
+                    crate::chrome::paint_image(
+                        ui,
+                        &bp.with_clip_rect(screen(cell.intersect(body))),
+                        crate::icons::private_mark(ink),
+                        screen(Rect::from_min_size(
+                            pos2(x0 + 4.0, top + content_offset),
+                            egui::vec2(16.0, 16.0),
+                        )),
+                    );
                     x0 + 22.0
                 } else {
                     x0 + 6.0
@@ -1078,7 +1194,7 @@ pub fn show(
                         ui,
                         &bp,
                         IconKey::Silk("page_white_stack"),
-                        pos2(x0 + 2.0, top),
+                        pos2(x0 + 2.0, top + content_offset),
                     );
                 }
                 let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
@@ -1108,13 +1224,17 @@ pub fn show(
                     .map(english)
                     .is_some_and(|h| cell.contains(h))
                 {
-                    let tip = if *c == 3 {
+                    let tip = if *c == STATUS {
+                        // Private window's mark first (#1581), the whole status, the events.
                         let events = status_tip(idx);
-                        match &row.status_whole {
-                            Some(whole) if events.is_empty() => whole.clone(),
-                            Some(whole) => format!("{whole}\n{events}"),
-                            None => events,
-                        }
+                        row.private
+                            .iter()
+                            .chain(&row.status_whole)
+                            .chain(Some(&events))
+                            .filter(|t| !t.is_empty())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     } else if *c == RATE && !row.cells[*c].is_empty() {
                         row.rate_tip.clone().unwrap_or_default()
                     } else {
@@ -1136,7 +1256,35 @@ pub fn show(
                 } else {
                     TEXT()
                 };
-                text_font(&clip, font.clone(), tx, top + 12.0, &s, ink);
+                if mac
+                    && *c == STATUS
+                    && let Some(fraction) = row.progress.filter(|f| *f > 0.0 && *f < 1.0)
+                {
+                    let track = Rect::from_min_max(
+                        pos2(tx, top + row_h() - 5.0),
+                        pos2((x1 - 8.0).max(tx), top + row_h() - 3.0),
+                    );
+                    clip.rect_filled(screen(track), 1.0, crate::theme::colors().list_grid);
+                    let mut filled = track;
+                    filled.set_width(track.width() * fraction as f32);
+                    clip.rect_filled(
+                        screen(filled),
+                        1.0,
+                        if sel {
+                            ink
+                        } else {
+                            crate::theme::colors().accent
+                        },
+                    );
+                }
+                text_font(
+                    &clip,
+                    font.clone(),
+                    tx,
+                    top + 12.0 + content_offset,
+                    &s,
+                    ink,
+                );
             }
         }
         // The grid line is the item's own last row (top + 16), so icons are not clipped; in
@@ -1151,7 +1299,11 @@ pub fn show(
     // While the list has the keys (no menu open, no text box focused), its focused row is what a
     // screen reader says has the focus, and follows as the keys move it; the list itself while
     // it has no rows (#1190: the reader never went into the list).
-    if st.focused && !st.menu_open && ui.ctx().memory(|m| m.focused().is_none()) {
+    if st.focused
+        && !st.menu_open
+        && st.filter_open.is_none()
+        && ui.ctx().memory(|m| m.focused().is_none())
+    {
         let shown = |f: &usize| reach.contains(f) || (first..first + visible).contains(f);
         let item = focus
             .filter(|f| *f < rows.len() && shown(f))
@@ -1163,8 +1315,20 @@ pub fn show(
         // bottom edge, far from the row.
         resp.clone().on_hover_text_at_pointer(full);
     }
-    filter_box(ui, st);
-    for (_, _, x1) in cols.iter().filter(|_| !rows.is_empty()) {
+    if let Some(col) = st.filter_open {
+        let trigger = cols
+            .iter()
+            .find(|(c, _, _)| *c == col)
+            .map(|&(_, x0, x1)| funnel_rect(st, col, x0, x1, ct).intersect(header));
+        if let Some(trigger) =
+            trigger.filter(|r| r.is_positive() && st.hscroll == st.filter_hscroll && !st.menu_open)
+        {
+            filter_box(ui, st, col, trigger, outer);
+        } else {
+            st.filter_open = None;
+        }
+    }
+    for (_, _, x1) in cols.iter().filter(|_| !mac && !rows.is_empty()) {
         // On the column's last pixel, under its header's divider: one straight line from the
         // header down (#924: it sat a pixel to the right, on the next column's first).
         fill(&bp, *x1, body_top, *x1, rb, GRID_V_RIGHT());
@@ -1394,7 +1558,12 @@ pub fn show(
 fn fit_width(p: &egui::Painter, font: &egui::FontId, col: usize, rows: &[Row]) -> f32 {
     let measure = |s: &str| winui::text_width_font(p, font.clone(), s);
     // The title, with room for the sort arrow and the filter funnel.
-    let title = measure(crate::i18n::tc("column", TITLES[col])) + 6.0 + 24.0;
+    let title = measure(header_title(col))
+        + if crate::theme::mac_layout() {
+            MAC_FILTER_ROOM + 25.0
+        } else {
+            30.0
+        };
     let lead = if col == 0 { 22.0 } else { 6.0 };
     let cells = rows
         .iter()
@@ -1402,7 +1571,9 @@ fn fit_width(p: &egui::Painter, font: &egui::FontId, col: usize, rows: &[Row]) -
         .fold(0.0, f32::max);
     match col {
         // The queue icon and the source chip have their own sizes.
-        1 | SOURCE => DEFAULT_WIDTHS[col],
+        QUEUE if crate::theme::mac_layout() => MAC_QUEUE_WIDTH.max(title),
+        SOURCE if crate::theme::mac_layout() => DEFAULT_WIDTHS[col].max(title),
+        QUEUE | SOURCE => DEFAULT_WIDTHS[col],
         _ => title.max(cells).ceil().max(MIN_WIDTH),
     }
 }
@@ -1469,6 +1640,14 @@ fn dotted(p: &egui::Painter, l: f32, t: f32, r: f32, b: f32, color: Color32) {
     }
 }
 
+fn mac_center_offset(height: f32, baseline: f32) -> f32 {
+    if crate::theme::mac_layout() {
+        ((height - baseline) * 0.5).round()
+    } else {
+        0.0
+    }
+}
+
 /// A Source chip: a rounded pill, green "Web" or purple "Torrent", white text, at the cell's
 /// left of the cell `x0..x1`. A label too long for the cell (a translation in a narrow column)
 /// is cut with "..."; returns whether it was.
@@ -1492,34 +1671,42 @@ fn chip(
     // Room: the pill starts 5 px in, pads its text 6 px each side, and ends 3 px before the cell.
     let label = &winui::ellipsize(p, font, full, (x1 - x0 - 5.0 - 12.0 - 3.0).max(0.0));
     let w = winui::text_width_font(p, font.clone(), label).round();
+    let height = if crate::theme::mac_layout() {
+        17.0_f32.min(row_h() - 4.0)
+    } else {
+        row_h() - 4.0
+    };
     let pill = Rect::from_min_size(
-        pos2(x0 + 5.0, top + 2.0),
-        egui::vec2(w + 12.0, row_h() - 4.0),
+        pos2(x0 + 5.0, top + (row_h() - height) / 2.0),
+        egui::vec2(w + 12.0, height),
     );
-    p.rect_filled(winui::rect(pill), (row_h() - 4.0) / 2.0, fill);
+    p.rect_filled(winui::rect(pill), height / 2.0, fill);
     text_font(
         p,
         font.clone(),
         pill.left() + 6.0,
-        top + 12.0,
+        top + 12.0 + mac_center_offset(row_h(), 17.0),
         label,
         crate::theme::colors().chip_text,
     );
     label != full
 }
 
-/// Where a column's funnel sits in its header: at the right, left of the sort chevron.
+/// The filter target excludes the divider grip. On Mac its position is independent of sorting.
 fn funnel_rect(st: &ListState, col: usize, x0: f32, x1: f32, ct: f32) -> Rect {
     let sorted = st.sort.is_some_and(|(sc, _)| sc == col);
-    let right = x1 - if sorted { 18.0 } else { 4.0 };
-    let left = (right - 12.0).max(x0 + 2.0);
-    Rect::from_min_max(pos2(left, ct + 6.0), pos2(right, ct + header_h() - 6.0))
+    let roomy = x1 - x0 >= 44.0;
+    let mac = crate::theme::mac_layout();
+    let right = x1 - if sorted && roomy && !mac { 18.0 } else { GRIP };
+    let width = if mac && roomy { MAC_FILTER_ROOM } else { 12.0 };
+    let left = (right - width).max(if roomy { x0 + GRIP } else { (x0 + x1) * 0.5 });
+    Rect::from_min_max(pos2(left, ct), pos2(right, ct + header_h()))
 }
 
 /// A small funnel: a triangle over a stem, in English rect `rc`.
 fn funnel(p: &egui::Painter, rc: Rect, color: Color32) {
     let rc = winui::rect(rc);
-    let (cx, top) = (rc.center().x, rc.top() + 1.0);
+    let (cx, top) = (rc.center().x, (rc.center().y - 5.0).round());
     p.add(egui::Shape::convex_polygon(
         vec![
             pos2(cx - 5.0, top),
@@ -1537,10 +1724,14 @@ const FILTER_W: f32 = 230.0;
 
 /// The open filter box under a header: a checkbox per value, or a "contains" search box; it
 /// filters as you change it. Escape or a click elsewhere closes it.
-fn filter_box(ui: &mut Ui, st: &mut ListState) {
-    let Some((col, at)) = st.filter_open else {
-        return;
-    };
+fn filter_box(ui: &mut Ui, st: &mut ListState, col: usize, trigger: Rect, outer: Rect) {
+    let at = pos2(
+        trigger
+            .left()
+            .min(outer.right() - FILTER_W)
+            .max(outer.left()),
+        trigger.bottom(),
+    );
     let values = filter_values(col);
     let h = match values {
         Some(v) => 58.0 + 18.0 * v.len() as f32,
@@ -1552,20 +1743,15 @@ fn filter_box(ui: &mut Ui, st: &mut ListState) {
     let r = winui::rect;
     let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
     // A press anywhere else closes it (the toolbar, the menu bar, another header too), except
-    // on its own funnel, whose click toggles it; so does the list scrolling sideways (it
-    // stayed where the column was).
-    let on_funnel =
-        |pp: Pos2| pp.y <= at.y && pp.y >= at.y - header_h() && (pp.x - at.x).abs() <= 24.0;
+    // on its own funnel, whose click toggles it.
     if ui.input(|i| i.pointer.any_pressed())
         && ui
             .ctx()
             .pointer_interact_pos()
-            .is_some_and(|pp| !shown.contains(pp) && !on_funnel(pp))
+            .is_some_and(|pp| !shown.contains(pp) && !r(trigger).contains(pp))
     {
-        close = true;
-    }
-    if st.hscroll != st.filter_hscroll {
-        close = true;
+        st.filter_open = None;
+        return;
     }
     egui::Area::new(egui::Id::unique(("list-filter", col)))
         .order(egui::Order::Foreground)
@@ -1582,7 +1768,11 @@ fn filter_box(ui: &mut Ui, st: &mut ListState) {
                         &p,
                         o.x + 10.0,
                         o.y + 20.0,
-                        crate::i18n::t("Show"),
+                        if crate::theme::mac_layout() {
+                            header_title(col)
+                        } else {
+                            crate::i18n::t("Show")
+                        },
                         winui::TEXT(),
                     );
                     let mut keep: Vec<&'static str> = match &st.filters[col] {
@@ -1734,6 +1924,23 @@ fn move_column(st: &mut ListState, cols: &[(usize, f32, f32)], col: usize, x: f3
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_columns_upgrade_only_untouched_defaults() {
+        let mut layout = ListState::default().layout();
+        layout.order = DEFAULT_ORDER.to_vec();
+        layout.widths = DEFAULT_WIDTHS.to_vec();
+        layout.upgrade_mac_defaults();
+        assert_eq!(layout.order, MAC_ORDER);
+        assert_eq!(layout.widths[0], MAC_FILENAME_WIDTH);
+        layout.order.swap(0, 2);
+        layout.widths[0] = 183.0;
+        let manual = layout.order.clone();
+        layout.upgrade_mac_defaults();
+        assert_eq!(layout.order, manual);
+        assert_eq!(layout.widths[0], 183.0);
+    }
+
     #[test]
     fn data_cells_keep_their_own_direction() {
         const FSI: char = '\u{2068}';
@@ -1835,6 +2042,7 @@ mod tests {
             queued,
             cells,
             status_whole: None,
+            private: None,
             rate_tip: None,
             progress: None,
         }
@@ -2083,6 +2291,7 @@ mod tests {
                     _ => String::new(),
                 }),
                 status_whole: None,
+                private: None,
                 rate_tip: None,
                 progress: None,
             })

@@ -13,6 +13,11 @@ use crate::winui::{self, text_font, text_width_font};
 
 /// Height of our menu bar band incl. its #f0f0f0 bottom line (IDM: non-client y −20…−1).
 pub const MENU_H: f32 = 20.0;
+pub const WINDOW_MENU_H: f32 = if cfg!(target_os = "macos") {
+    0.0
+} else {
+    MENU_H
+};
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
@@ -125,6 +130,17 @@ impl ShellIcons {
                 }
             }
             IconKey::Themed(need, name) => {
+                if crate::theme::mac_layout()
+                    && crate::icons::paint_mac_symbol(
+                        ui,
+                        painter,
+                        need,
+                        rc,
+                        crate::theme::colors().accent,
+                    )
+                {
+                    return;
+                }
                 if !crate::themeicons::paint(ui, painter, need, rc, true)
                     && let Some(src) = silk(name)
                 {
@@ -192,7 +208,13 @@ pub fn menus(p: &egui::Painter) -> Vec<(&'static str, f32, f32, f32)> {
     translated
         .into_iter()
         .map(|label| {
-            let w = menu_width(p, &plain(label).0) + pad;
+            let (text, _) = plain(label);
+            let title = if crate::theme::mac_layout() && !cues_shown(p.ctx()) {
+                menu_caption(&text)
+            } else {
+                &text
+            };
+            let w = menu_width(p, title) + pad;
             let item = (label, x, w, x + inset);
             x += w;
             item
@@ -272,10 +294,16 @@ pub fn menu_bar(ui: &mut Ui, o: Pos2, width: f32, open: Option<usize>) -> Option
         // The title without its "&", its access letter underlined (each language marks its
         // own: French Tâches and Téléchargements both had T).
         let (shown, letter) = plain(label);
-        let drawn = text_font(&p, winui::segoe(), o.x + tx, o.y + 13.0, &shown, TEXT());
+        let hide_keys = crate::theme::mac_layout() && !cues_shown(ui.ctx());
+        let title = if hide_keys {
+            menu_caption(&shown)
+        } else {
+            &shown
+        };
+        let drawn = text_font(&p, winui::segoe(), o.x + tx, o.y + 13.0, title, TEXT());
         // Dark mode always underlines mnemonics (1 px under the letter's advance); light mode
         // follows the Windows rule: once the keyboard is in use (`cues`).
-        if cues(ui.ctx()) {
+        if !hide_keys && cues(ui.ctx()) {
             let (x0, x1) =
                 winui::char_span(&p, &winui::segoe(), &shown, letter.unwrap_or(0), drawn);
             fill(&p, x0, o.y + 15.0, x1, o.y + 15.0, TEXT());
@@ -373,7 +401,7 @@ pub fn menubar_next(open: Option<usize>, event: MenuBarEvent) -> Option<usize> {
 
 // ---- popup menus ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum MenuEntry<C> {
     /// Label (with `&` before the mnemonic letter), command, enabled, checked.
     Item(&'static str, C, bool, bool),
@@ -412,6 +440,29 @@ pub fn menu_letter(label: &str) -> String {
         .unwrap_or_default()
 }
 
+fn menu_caption(label: &str) -> &str {
+    // CJK translations put the Latin mnemonic in a trailing "(T)".
+    if let Some((caption, key)) = label.rsplit_once('(')
+        && key.len() == 2
+        && key.ends_with(')')
+        && key.as_bytes()[0].is_ascii_alphanumeric()
+    {
+        return caption.trim_end();
+    }
+    label
+}
+
+pub fn mac_caption(label: &str) -> String {
+    let (plain, _) = plain(label);
+    let stem = plain
+        .strip_suffix("...")
+        .or_else(|| plain.strip_suffix('…'));
+    match stem {
+        Some(stem) => format!("{}…", menu_caption(stem)),
+        None => menu_caption(&plain).to_owned(),
+    }
+}
+
 fn plain(label: &str) -> (String, Option<usize>) {
     let mut out = String::new();
     let mut mnemonic = None;
@@ -439,7 +490,7 @@ pub fn access_key(label: &str) -> Option<String> {
 }
 
 /// The menu bar's titles, in English (their translations: context "menubar").
-#[cfg(test)]
+#[cfg(any(test, target_os = "macos"))]
 pub fn bar_titles() -> Vec<&'static str> {
     MENUS.iter().map(|m| m.0).collect()
 }
@@ -1382,6 +1433,28 @@ pub fn style_popup(title: &str, look: PopupLook) -> bool {
     false
 }
 
+/// The frame of a small floating window of ours ([`PopupLook::Floating`]: the drop target, the
+/// tray icon's panel, #1365), filling `rect`: the window's fill and the floating windows' edge
+/// (the palette's `drop_edge`, named for the first of them), one look for all of them; `over`,
+/// something dragged over it (the drop target), the shared highlight and the accent instead.
+pub fn floating_frame(p: &egui::Painter, rect: Rect, over: bool) {
+    let (fill, edge) = if over {
+        (
+            winui::highlight_fill(winui::State::Hot, crate::theme::colors()).unwrap_or(winui::BG()),
+            winui::accent(),
+        )
+    } else {
+        (winui::BG(), crate::theme::colors().drop_edge)
+    };
+    p.rect_filled(rect, 0.0, fill);
+    p.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
+}
+
 /// Show the borderless window `vid` [`style_popup`] just styled (from its parent's pass).
 pub fn show_popup(ctx: &egui::Context, vid: egui::ViewportId) {
     ctx.send_viewport_cmd_to(vid, egui::ViewportCommand::Visible(true));
@@ -1917,7 +1990,11 @@ pub enum ToolbarEvent {
 /// Paint the etch (y 20, 21) and the toolbar band (y 22–91).
 /// Client y where the panes (Categories, list) start: below the toolbar band, in both modes.
 pub fn pane_top() -> f32 {
-    70.0
+    if crate::theme::mac_layout() {
+        50.0
+    } else {
+        70.0
+    }
 }
 
 /// The main toolbar: `buttons` (icon, English label, enabled), and `keys`, the button that has
@@ -1935,7 +2012,7 @@ pub fn toolbar(
     keys: Option<usize>,
 ) -> Option<ToolbarEvent> {
     let p = ui.painter().clone();
-    let top = o.y + MENU_H;
+    let top = o.y + WINDOW_MENU_H;
     let c = crate::theme::colors();
     fill(&p, o.x, top, o.x + width - 1.0, top, c.toolbar_line);
     fill(
@@ -1948,7 +2025,9 @@ pub fn toolbar(
     );
     // Both modes (light-main.md; dark changes only colours): Tahoma labels, 66 px buttons, a
     // 68 px band.
-    let (font, base_w, band_h) = (winui::tahoma(), 66.0f32, 68.0);
+    let mac = crate::theme::mac_layout();
+    let (base_w, band_h) = if mac { (34.0_f32, 48.0) } else { (66.0, 68.0) };
+    let font = winui::tahoma();
     let band = Rect::from_min_size(pos2(o.x, top + 2.0), vec2(width, band_h));
     p.rect_filled(band, 0.0, WINDOW_BG());
     let mut x = o.x;
@@ -1988,14 +2067,30 @@ pub fn toolbar(
     let keys = keys.map(|k| k.min(buttons.len().saturating_sub(1)));
     // Each button's leading x, for its drop-down menu opened from the keys.
     let mut lefts = Vec::with_capacity(buttons.len());
+    let group = |icon: Icon| match icon {
+        Icon::AddUrl | Icon::AddTorrent => 0,
+        Icon::Resume | Icon::Stop | Icon::StopAll | Icon::Delete | Icon::DeleteCompleted => 1,
+        _ => 2,
+    };
     for (i, (icon, label, enabled)) in buttons.iter().enumerate() {
+        let first_in_group = i == 0 || group(buttons[i - 1].0) != group(*icon);
+        if mac && first_in_group {
+            x += 8.0;
+        }
         lefts.push(x);
         let full = crate::i18n::tc("toolbar", label);
         let dropdown = is_dropdown(icon);
         // IDM's buttons are 66 px; ours grow only when a full label needs it (user
         // decision), up to the cap that keeps the toolbar inside the window.
         let full_ext = text_width_font(&p, font.clone(), full).round();
-        let bw = base_w.max((full_ext + 12.0).min(cap));
+        let named = mac && width >= 620.0 && *icon == Icon::AddUrl;
+        let bw = if named {
+            full_ext + 44.0
+        } else if mac {
+            base_w
+        } else {
+            base_w.max((full_ext + 12.0).min(cap))
+        };
         let cut = full_ext + 12.0 > bw;
         let shown = if cut {
             winui::ellipsize(&p, &font, full, bw - 12.0)
@@ -2012,7 +2107,11 @@ pub fn toolbar(
             vec2(total, band_h),
         ));
         let resp = bar_ui.interact(rc, egui::Id::unique(("tb", i)), winui::pointer_only());
-        let resp = if cut { resp.on_hover_text(full) } else { resp };
+        let resp = if cut || (mac && !named) {
+            resp.on_hover_text(full)
+        } else {
+            resp
+        };
         // A button named as its whole label, greyed or not; a drop-down's arrow is its Expand
         // (its menu); a screen reader can move its focus to it (the toolbar takes the keys).
         winui::expose(&resp, egui::Role::Button, full, *enabled, None);
@@ -2026,111 +2125,171 @@ pub fn toolbar(
                 n.set_expanded(false);
             });
             if ui.input(|inp| inp.has_accesskit_action_request(resp.id, Action::Expand)) {
-                event = Some(ToolbarEvent::Drop(i, pos2(winui::mx(x), o.y + 85.0)));
+                event = Some(ToolbarEvent::Drop(
+                    i,
+                    pos2(winui::mx(x), band.bottom() - 5.0),
+                ));
             }
         }
         if winui::focus_target(ui.ctx(), resp.id) {
             event = Some(ToolbarEvent::Keys(i));
         }
         let past_button = |q: Pos2| winui::mx(q.x) >= x + bw;
-        if *enabled && resp.hovered() {
-            // Hover (IDM 6.42, captured 2026-10-30): the button's own width, from the band's top,
-            // square. Dark: a flat #33414d. Light: Windows' hot button, #e5f3ff with a 1 px
-            // #cce8ff border. As much room under the label as above the icon (user request
-            // 2026-11-01: IDM's 61 px left the label on the bottom edge): 65 tall, inside the
-            // band. Beyond IDM (which lights only the button part, user
-            // request 2026-10-29): a drop-down is a split button — the part under the pointer is
-            // lit (pressed while the mouse is down), the other part faintly, a 1 px divider between.
-            let h = 65.0;
-            let (hot_c, faint_c, down_c, edge_c, border_c) = (
-                c.toolbar_hot,
-                c.toolbar_hot_faint,
-                c.toolbar_pressed,
-                c.toolbar_hot_edge,
-                c.toolbar_hot_border,
+        if mac {
+            let last_in_group = buttons
+                .get(i + 1)
+                .is_none_or(|next| group(next.0) != group(*icon));
+            let strip = Rect::from_min_max(pos2(x, top + 8.0), pos2(x + total, top + 40.0));
+            let (leading, trailing) = (
+                if first_in_group { 16 } else { 0 },
+                if last_in_group { 16 } else { 0 },
             );
-            let on_arrow = dropdown && resp.hover_pos().is_some_and(past_button);
-            let down = resp.is_pointer_button_down_on();
-            let main = winui::rect(Rect::from_min_size(pos2(x, band.top()), vec2(bw, h)));
-            // The arrow part starts on the button's last column: their borders share one line.
-            let arrow = winui::rect(Rect::from_min_size(
-                pos2(x + bw - 1.0, band.top()),
-                vec2(total - bw + 1.0, h),
-            ));
-            let lit = |r: Rect, under: bool| {
-                let c = match (under, down) {
-                    (true, true) => down_c,
-                    (true, false) => hot_c,
-                    (false, _) => faint_c,
-                };
-                p.rect_filled(r, 0.0, c);
-                // None in the dark look (a transparent border isn't drawn).
-                p.rect_stroke(
-                    r,
-                    0.0,
-                    egui::Stroke::new(1.0, border_c),
-                    egui::StrokeKind::Inside,
-                );
+            let (left, right) = if winui::mx(x) > winui::mx(x + total) {
+                (trailing, leading)
+            } else {
+                (leading, trailing)
             };
-            lit(main, !on_arrow);
+            p.rect_filled(
+                winui::rect(strip),
+                egui::CornerRadius {
+                    nw: left,
+                    ne: right,
+                    sw: left,
+                    se: right,
+                },
+                c.list,
+            );
+            if let Some(fill) = winui::subtle_fill(winui::State::of(&resp, *enabled || dropdown), c)
+            {
+                p.rect_filled(winui::rect(strip.shrink(2.0)), 12.0, fill);
+            }
+            let cx = if named { x + 18.0 } else { x + bw / 2.0 };
+            let glyph = Rect::from_center_size(pos2(cx, top + 24.0), vec2(18.0, 18.0));
+            let glyph = winui::rect(glyph);
+            let ink = if named {
+                c.accent
+            } else if *enabled {
+                c.text
+            } else {
+                c.toolbar_text_disabled
+            };
+            if !icon
+                .need()
+                .is_some_and(|need| crate::icons::paint_mac_symbol(ui, &p, need, glyph, ink))
+            {
+                icon.image(*enabled).paint_at(ui, glyph);
+            }
+            if named {
+                text_font(&p, font.clone(), x + 32.0, top + 28.0, full, TEXT());
+            }
             if dropdown {
-                lit(arrow, on_arrow);
-                // The divider: the parts' shared edge, one line.
-                winui::fill_l(
-                    &p,
-                    x + bw - 1.0,
-                    band.top(),
-                    x + bw - 1.0,
-                    band.top() + h - 1.0,
-                    edge_c,
-                );
+                let cx = x + bw + 5.0;
+                let at = |dx, dy| pos2(winui::mx(cx + dx), top + 24.0 + dy);
+                p.add(egui::Shape::line(
+                    vec![at(-3.0, -1.5), at(0.0, 1.5), at(3.0, -1.5)],
+                    Stroke::new(1.3, c.muted),
+                ));
             }
-        }
-        let cx = x + bw / 2.0;
-        let icon_rect = Rect::from_min_size(
-            pos2(cx - 16.0, top + 9.5 + 20.0 - 20.0 + 0.0),
-            vec2(32.0, 32.0),
-        )
-        .translate(vec2(0.0, 0.0));
-        let icon_rect = Rect::from_center_size(pos2(cx, top + 25.5), icon_rect.size());
-        // Placed, not mirrored: an icon keeps its look.
-        icon.image(*enabled).paint_at(ui, winui::rect(icon_rect));
-        // Label: x = btn.x + floor((w − ext)/2), +1 for drop-downs, last ink row 58. Every label
-        // on one line (IDM draws the drop-downs' 1 px lower: in one row it read as a mistake).
-        let mut lx = x + ((bw - ext) / 2.0).floor();
-        if dropdown {
-            lx += 1.0;
-        }
-        let ly = top + 58.0;
-        text_font(
-            &p,
-            font.clone(),
-            lx,
-            ly,
-            label,
-            if *enabled { TEXT() } else { TB_DISABLED() },
-        );
-        if dropdown {
-            let ax = x + bw + 4.0;
-            let ay = top + 31.0;
-            // The split's divider at rest (user choice 2026-10-29, "B"): a classic etched
-            // toolbar separator — a shadow line and a highlight beside it — 24 px tall, centred
-            // on the arrow; the hover draws the full divider instead.
-            if !(*enabled && resp.hovered()) {
-                let (shadow, light) = (c.toolbar_split_shadow, c.toolbar_split_light);
-                let (y0, y1) = (ay - 10.0, ay + 13.0);
-                winui::fill_l(&p, x + bw - 1.0, y0, x + bw - 1.0, y1, shadow);
-                winui::fill_l(&p, x + bw, y0, x + bw, y1, light);
-            }
-            for (row, half) in [3.0f32, 2.0, 1.0, 0.0].iter().enumerate() {
-                winui::fill_l(
-                    &p,
-                    ax + 3.0 - half,
-                    ay + row as f32,
-                    ax + 3.0 + half,
-                    ay + row as f32,
-                    TB_ARROW(),
+        } else {
+            if *enabled && resp.hovered() {
+                // Hover (IDM 6.42, captured 2026-10-30): the button's own width, from the band's top,
+                // square. Dark: a flat #33414d. Light: Windows' hot button, #e5f3ff with a 1 px
+                // #cce8ff border. As much room under the label as above the icon (user request
+                // 2026-11-01: IDM's 61 px left the label on the bottom edge): 65 tall, inside the
+                // band. Beyond IDM (which lights only the button part, user
+                // request 2026-10-29): a drop-down is a split button — the part under the pointer is
+                // lit (pressed while the mouse is down), the other part faintly, a 1 px divider between.
+                let h = 65.0;
+                let (hot_c, faint_c, down_c, edge_c, border_c) = (
+                    c.toolbar_hot,
+                    c.toolbar_hot_faint,
+                    c.toolbar_pressed,
+                    c.toolbar_hot_edge,
+                    c.toolbar_hot_border,
                 );
+                let on_arrow = dropdown && resp.hover_pos().is_some_and(past_button);
+                let down = resp.is_pointer_button_down_on();
+                let main = winui::rect(Rect::from_min_size(pos2(x, band.top()), vec2(bw, h)));
+                // The arrow part starts on the button's last column: their borders share one line.
+                let arrow = winui::rect(Rect::from_min_size(
+                    pos2(x + bw - 1.0, band.top()),
+                    vec2(total - bw + 1.0, h),
+                ));
+                let lit = |r: Rect, under: bool| {
+                    let c = match (under, down) {
+                        (true, true) => down_c,
+                        (true, false) => hot_c,
+                        (false, _) => faint_c,
+                    };
+                    p.rect_filled(r, 0.0, c);
+                    // None in the dark look (a transparent border isn't drawn).
+                    p.rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(1.0, border_c),
+                        egui::StrokeKind::Inside,
+                    );
+                };
+                lit(main, !on_arrow);
+                if dropdown {
+                    lit(arrow, on_arrow);
+                    // The divider: the parts' shared edge, one line.
+                    winui::fill_l(
+                        &p,
+                        x + bw - 1.0,
+                        band.top(),
+                        x + bw - 1.0,
+                        band.top() + h - 1.0,
+                        edge_c,
+                    );
+                }
+            }
+            let cx = x + bw / 2.0;
+            let icon_rect = Rect::from_min_size(
+                pos2(cx - 16.0, top + 9.5 + 20.0 - 20.0 + 0.0),
+                vec2(32.0, 32.0),
+            )
+            .translate(vec2(0.0, 0.0));
+            let icon_rect = Rect::from_center_size(pos2(cx, top + 25.5), icon_rect.size());
+            // Placed, not mirrored: an icon keeps its look.
+            icon.image(*enabled).paint_at(ui, winui::rect(icon_rect));
+            // Label: x = btn.x + floor((w − ext)/2), +1 for drop-downs, last ink row 58. Every label
+            // on one line (IDM draws the drop-downs' 1 px lower: in one row it read as a mistake).
+            let mut lx = x + ((bw - ext) / 2.0).floor();
+            if dropdown {
+                lx += 1.0;
+            }
+            let ly = top + 58.0;
+            text_font(
+                &p,
+                font.clone(),
+                lx,
+                ly,
+                label,
+                if *enabled { TEXT() } else { TB_DISABLED() },
+            );
+            if dropdown {
+                let ax = x + bw + 4.0;
+                let ay = top + 31.0;
+                // The split's divider at rest (user choice 2026-10-29, "B"): a classic etched
+                // toolbar separator — a shadow line and a highlight beside it — 24 px tall, centred
+                // on the arrow; the hover draws the full divider instead.
+                if !(*enabled && resp.hovered()) {
+                    let (shadow, light) = (c.toolbar_split_shadow, c.toolbar_split_light);
+                    let (y0, y1) = (ay - 10.0, ay + 13.0);
+                    winui::fill_l(&p, x + bw - 1.0, y0, x + bw - 1.0, y1, shadow);
+                    winui::fill_l(&p, x + bw, y0, x + bw, y1, light);
+                }
+                for (row, half) in [3.0f32, 2.0, 1.0, 0.0].iter().enumerate() {
+                    winui::fill_l(
+                        &p,
+                        ax + 3.0 - half,
+                        ay + row as f32,
+                        ax + 3.0 + half,
+                        ay + row as f32,
+                        TB_ARROW(),
+                    );
+                }
             }
         }
         // No right-click menu: it would offer toolbar looks (sizes, styles) and only one is
@@ -2144,7 +2303,7 @@ pub fn toolbar(
             // The drop-down menu's top-left is the button's left edge at client y 85; in RTL its
             // top-right at the button's right edge.
             event = Some(if on_arrow {
-                ToolbarEvent::Drop(i, pos2(winui::mx(x), o.y + 85.0))
+                ToolbarEvent::Drop(i, pos2(winui::mx(x), band.bottom() - 5.0))
             } else {
                 ToolbarEvent::Click(i)
             });
@@ -2154,7 +2313,7 @@ pub fn toolbar(
         // use (winui::focus_ring).
         if keys == Some(i) {
             winui::keys_with(ui.ctx(), resp.id);
-            let square = Rect::from_min_size(pos2(x, band.top()), vec2(total, 65.0));
+            let square = Rect::from_min_size(pos2(x, band.top()), vec2(total, band_h - 3.0));
             winui::focus_ring(&p, winui::rect(square.shrink(3.0)));
         }
         x += total;
@@ -2164,7 +2323,10 @@ pub fn toolbar(
     {
         let enabled = buttons.get(k).is_some_and(|b| b.2);
         let dropdown = buttons.get(k).is_some_and(|b| is_dropdown(&b.0));
-        let at = pos2(winui::mx(lefts.get(k).copied().unwrap_or(o.x)), o.y + 85.0);
+        let at = pos2(
+            winui::mx(lefts.get(k).copied().unwrap_or(o.x)),
+            band.bottom() - 5.0,
+        );
         event = ui.input_mut(|i| toolbar_keys(i, k, buttons.len(), enabled, dropdown, at));
     }
     event
@@ -2298,16 +2460,21 @@ pub fn categories(
     keys: bool,
 ) -> Option<TreeEvent> {
     let p = ui.painter().clone();
-    let y0 = o.y + pane_top() + MENU_H; // frame top
+    let mac = crate::theme::mac_layout();
+    let row_h = if mac { 28.0 } else { 16.0 };
+    let y0 = o.y + pane_top() + WINDOW_MENU_H; // frame top
     // Laid out in English (frame x 6 .. right); every part made where it is on screen — the pane
     // on the right in RTL, its tree indenting from the right.
     let frame = winui::rect(Rect::from_min_max(
         pos2(o.x + 6.0, y0),
         pos2(right, bottom - 5.0),
     ));
+    if mac {
+        p.rect_filled(frame, 8.0, TREE_BG());
+    }
     p.rect_stroke(
         frame,
-        0.0,
+        if mac { 8.0 } else { 0.0 },
         Stroke::new(1.0, CAT_FRAME()),
         egui::StrokeKind::Inside,
     );
@@ -2332,21 +2499,26 @@ pub fn categories(
         pos2(right - 19.0, y0 + 2.0),
         vec2(16.0, 15.0),
     ));
-    let cr = ui
-        .interact(close, egui::Id::unique("cat-close"), winui::pointer_only())
-        // i18n: tooltip of the × that closes the Categories pane
-        .on_hover_text(crate::i18n::t("Close"));
-    if let Some(c) = winui::subtle_fill(winui::State::of(&cr, true), crate::theme::colors()) {
-        p.rect_filled(close, crate::theme::metrics().part_radius, c);
-    }
-    text_font(
-        &p,
-        winui::arial_bold(),
-        right - 15.0,
-        y0 + 13.0,
-        crate::i18n::t("x"),
-        TEXT(),
-    );
+    let cr = if mac {
+        winui::close_button(ui, close, "categories-close", "Close")
+    } else {
+        let cr = ui
+            .interact(close, egui::Id::unique("cat-close"), winui::pointer_only())
+            // i18n: tooltip of the × that closes the Categories pane
+            .on_hover_text(crate::i18n::t("Close"));
+        if let Some(c) = winui::subtle_fill(winui::State::of(&cr, true), crate::theme::colors()) {
+            p.rect_filled(close, crate::theme::metrics().part_radius, c);
+        }
+        text_font(
+            &p,
+            winui::arial_bold(),
+            right - 15.0,
+            y0 + 13.0,
+            crate::i18n::t("x"),
+            TEXT(),
+        );
+        cr
+    };
     if cr.clicked() {
         event = Some(TreeEvent::Close);
     }
@@ -2355,7 +2527,7 @@ pub fn categories(
 
     // Scroll bars (notes/ui-spec/scrollbars.md "Categories tree"): by rows vertically, by
     // pixels horizontally; each shows when the content overflows (Win32 rule).
-    let content_h = rows.len() as f32 * 16.0;
+    let content_h = rows.len() as f32 * row_h;
     let content_w = rows
         .iter()
         .map(|r| {
@@ -2387,9 +2559,9 @@ pub fn categories(
         .ctx()
         .data(|d| d.get_temp::<(f32, f32)>(scroll_id))
         .unwrap_or_default();
-    let page_rows = (area.height() / 16.0).floor().max(1.0);
+    let page_rows = (area.height() / row_h).floor().max(1.0);
     if ui.rect_contains_pointer(winui::rect(tree)) {
-        vpos += winui::wheel_rows(ui, 16.0, page_rows);
+        vpos += winui::wheel_rows(ui, row_h, page_rows);
         hpos -= ui.input(|i| i.smooth_scroll_delta.x);
     }
     // A node newly chosen (the keys, a screen reader) out of view is brought into it: a screen
@@ -2412,7 +2584,7 @@ pub fn categories(
     // Everything below is laid out from a horizontally scrolled origin.
     let o = pos2(o.x - hpos, o.y);
     let tp = p.with_clip_rect(winui::rect(area));
-    let row_top = |k: usize| area.top() + 16.0 * (k as f32 - first_row);
+    let row_top = |k: usize| area.top() + row_h * (k as f32 - first_row);
     // Blank space (registered first, so the rows sit above it): the selected node's menu, at
     // the pointer (IDM places it beside the node; user decision: at the pointer).
     let blank = ui.interact(
@@ -2449,49 +2621,51 @@ pub fn categories(
     let mut selected_at: Option<(usize, Pos2)> = None;
 
     // Connector dots (#6d6d6d, every other pixel), painted first; expander boxes cover them.
-    let roots: Vec<usize> = (0..rows.len()).filter(|&k| rows[k].level == 0).collect();
-    if let (Some(&first), Some(&last)) = (roots.first(), roots.last()) {
-        let mut y = row_top(first);
-        while y <= row_top(last) + 8.0 {
-            if (y - tree.top()) as i32 % 2 == 0 {
-                winui::px_l(&tp, o.x + 19.0, y, TREE_LINES());
-            }
-            y += 1.0;
-        }
-        for &k in &roots {
-            let mut x = o.x + 19.0;
-            while x <= o.x + 29.0 {
-                winui::px_l(&tp, x, row_top(k) + 8.0, TREE_LINES());
-                x += 2.0;
-            }
-        }
-    }
-    for (k, r) in rows.iter().enumerate() {
-        if r.level == 1 {
-            let mut x = o.x + 38.0;
-            while x <= o.x + 48.0 {
-                winui::px_l(&tp, x, row_top(k) + 8.0, TREE_LINES());
-                x += 2.0;
-            }
-            let is_last = rows.get(k + 1).is_none_or(|n| n.level == 0);
-            let start = row_top(k);
-            let end = if is_last {
-                row_top(k) + 8.0
-            } else {
-                row_top(k) + 15.0
-            };
-            let mut y = start;
-            while y <= end {
+    if !mac {
+        let roots: Vec<usize> = (0..rows.len()).filter(|&k| rows[k].level == 0).collect();
+        if let (Some(&first), Some(&last)) = (roots.first(), roots.last()) {
+            let mut y = row_top(first);
+            while y <= row_top(last) + 8.0 {
                 if (y - tree.top()) as i32 % 2 == 0 {
-                    winui::px_l(&tp, o.x + 38.0, y, TREE_LINES());
+                    winui::px_l(&tp, o.x + 19.0, y, TREE_LINES());
                 }
                 y += 1.0;
             }
+            for &k in &roots {
+                let mut x = o.x + 19.0;
+                while x <= o.x + 29.0 {
+                    winui::px_l(&tp, x, row_top(k) + 8.0, TREE_LINES());
+                    x += 2.0;
+                }
+            }
+        }
+        for (k, r) in rows.iter().enumerate() {
+            if r.level == 1 {
+                let mut x = o.x + 38.0;
+                while x <= o.x + 48.0 {
+                    winui::px_l(&tp, x, row_top(k) + 8.0, TREE_LINES());
+                    x += 2.0;
+                }
+                let is_last = rows.get(k + 1).is_none_or(|n| n.level == 0);
+                let start = row_top(k);
+                let end = if is_last {
+                    row_top(k) + 8.0
+                } else {
+                    row_top(k) + 15.0
+                };
+                let mut y = start;
+                while y <= end {
+                    if (y - tree.top()) as i32 % 2 == 0 {
+                        winui::px_l(&tp, o.x + 38.0, y, TREE_LINES());
+                    }
+                    y += 1.0;
+                }
+            }
         }
     }
-
     for (k, r) in rows.iter().enumerate() {
-        let top = row_top(k);
+        let row_y = row_top(k);
+        let top = row_y + (row_h - 16.0) / 2.0;
         // Rows outside the viewport (icons are not clipped by `tp`).
         if top < area.top() || top >= area.bottom() {
             continue;
@@ -2499,7 +2673,13 @@ pub fn categories(
         let icon_x = o.x + if r.level == 0 { 30.0 } else { 49.0 };
         let text_x = o.x + if r.level == 0 { 51.0 } else { 70.0 };
         let ext = text_width_font(&p, winui::tahoma(), crate::i18n::t(&r.label));
-        if r.selected {
+        if mac && r.selected {
+            let selected = Rect::from_min_max(
+                pos2(area.left() + 3.0, row_y + 1.0),
+                pos2(area.right() - 3.0, row_y + row_h - 1.0),
+            );
+            tp.rect_filled(winui::rect(selected), 6.0, winui::SELECTED_INACTIVE());
+        } else if r.selected {
             // The inactive selection grey behind the label, in both modes (#f0f0f0 on the white
             // tree could not be seen).
             winui::fill_l(
@@ -2512,8 +2692,10 @@ pub fn categories(
             );
         }
         if let Some(open) = r.expander {
-            if crate::theme::colors().tree_chevrons {
-                winui::fill_l(&tp, o.x + 11.0, top, o.x + 26.0, top + 15.0, TREE_BG());
+            if mac || crate::theme::colors().tree_chevrons {
+                if !mac {
+                    winui::fill_l(&tp, o.x + 11.0, top, o.x + 26.0, top + 15.0, TREE_BG());
+                }
                 chevron(&tp, o.x, top, open, r.selected);
             } else {
                 // Classic box; nothing opaque around it, so connectors run up to it.
@@ -2522,7 +2704,9 @@ pub fn categories(
         }
         // Icons placed, not mirrored.
         icons.paint_in(ui, &tp, r.icon.clone(), pos2(icon_x, top));
-        if let Some(name) = r.badge {
+        if let Some(name) = r.badge
+            && !(mac && r.level == 0)
+        {
             let rc = winui::rect(Rect::from_min_size(
                 pos2(icon_x + 7.0, top + 7.0),
                 vec2(9.0, 9.0),
@@ -2564,7 +2748,8 @@ pub fn categories(
         }
 
         let row = winui::rect(
-            Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), 16.0)).intersect(area),
+            Rect::from_min_size(pos2(area.left(), row_y), vec2(area.width(), row_h))
+                .intersect(area),
         );
         let resp = rows_ui.interact(
             row,

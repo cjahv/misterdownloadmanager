@@ -1,6 +1,8 @@
 //! The notification-area icon (IDM: "IDM menu pops up when you right click on IDM icon"
-//! [IDM-doc]). Left click shows the window again, or hides it there while it shows; right click
-//! shows the menu. The menu's
+//! [IDM-doc]). Left click shows the downloads panel (traypanel.rs, #1365), or, with Options →
+//! General's "Show downloads when the notification area icon is clicked" unticked, shows the
+//! window again or hides it there while it shows; a double click (Windows) opens the window;
+//! right click shows the menu. The menu's
 //! contents are ours ([unknown] IDM's exact items, lab). Windows, macOS (menu bar) and Linux
 //! (StatusNotifierItem over D-Bus: KDE, GNOME with its AppIndicator extension).
 
@@ -8,6 +10,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 mod beside;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(not(target_os = "macos"))]
 mod picture;
 mod watch;
@@ -20,15 +24,20 @@ pub use watch::Icon;
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
+#[cfg(not(target_os = "macos"))]
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// What the tray asks the app to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayCmd {
     Show,
-    /// Left click on the icon: the window back when hidden or behind other
+    /// Left click on the icon, where it was (screen pixels; None where the tray doesn't say,
+    /// [`click_at`]): the downloads panel there (#1365), or with Options' "Show downloads when the
+    /// notification area icon is clicked" unticked the window back when hidden or behind other
     /// windows, hidden there when frontmost.
-    Toggle,
+    Click(Option<(i32, i32)>),
+    /// Left double click on the icon (where the tray reports it): the window.
+    DoubleClick,
     AddUrl,
     Batch,
     /// Add batch download from clipboard (#709).
@@ -105,6 +114,24 @@ pub fn on_close(
     }
 }
 
+/// A left click this soon after a double click is the double click's last release: the
+/// system's double-click time (Windows; the other trays send no double click).
+#[cfg(not(target_os = "macos"))]
+fn double_click() -> std::time::Duration {
+    #[cfg(windows)]
+    return crate::win32::double_click_time();
+    #[cfg(not(windows))]
+    std::time::Duration::from_millis(500)
+}
+
+/// A click's place as the tray gave it (screen pixels), or None where it gave none: a
+/// StatusNotifierItem host may send 0, 0 for "unknown" (GNOME's AppIndicator extension can),
+/// which is no place on any screen's taskbar.
+fn click_at(x: f64, y: f64) -> Option<(i32, i32)> {
+    let (x, y) = (x.round() as i32, y.round() as i32);
+    (x != 0 || y != 0).then_some((x, y))
+}
+
 /// The longest download name in the tray menu, in characters (the rest ends in "…").
 const MENU_NAME_MAX: usize = 48;
 
@@ -131,7 +158,10 @@ struct Native {
     /// The icon itself, kept for as long as the tray (Windows asks and tells the shell about it
     /// from the watcher's thread, through its hidden window).
     #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(not(target_os = "macos"))]
     tray: TrayIcon,
+    #[cfg(target_os = "macos")]
+    tray: macos::StatusItem,
     /// "Downloads in progress": one entry per running download, rebuilt when they change.
     downloads: Submenu,
     download_ids: Arc<Mutex<Vec<(MenuId, u64)>>>,
@@ -402,7 +432,7 @@ impl Native {
         #[cfg(target_os = "macos")]
         {
             // MDM_TEST_TRAY_RECT=0: the menu bar gives the item no place.
-            let placed = self.tray.rect().is_some()
+            let placed = self.tray.placed()
                 && std::env::var_os("MDM_TEST_TRAY_RECT").is_none_or(|v| v != "0");
             if self.answer.replace(Some(placed)) != Some(placed) {
                 tracing::info!("tray icon: placed {placed}");
@@ -502,35 +532,33 @@ impl Native {
         let px = fitted.1;
         #[cfg(not(any(windows, target_os = "macos")))]
         let px = picture::STATUS_NOTIFIER_PX;
-        #[cfg(not(target_os = "macos"))]
-        let icon = picture(px);
         #[cfg(target_os = "macos")]
-        let icon = menu_bar_icon();
-        let icon = match icon {
-            Ok(icon) => icon,
-            Err(e) => {
-                tracing::warn!("tray icon: no picture: {e}");
-                return None;
-            }
-        };
-        let builder = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false)
-            .with_tooltip(crate::MAIN_TITLE);
-        #[cfg(target_os = "macos")]
-        let builder = builder.with_icon_templated(icon);
+        let tray = macos::StatusItem::new(menu, tx.clone(), ctx)?;
         #[cfg(not(target_os = "macos"))]
-        let builder = builder.with_icon(icon);
-        // Linux and the BSDs (StatusNotifierItem): the item's title is its name in the shell's
-        // lists, KDE's notification area among them, which showed MDM's icon with no name (#1305).
-        // Not on macOS, where a title is text beside the icon in the menu bar; Windows has none.
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let builder = builder.with_title(crate::MAIN_TITLE);
-        let tray = match builder.build() {
-            Ok(tray) => tray,
-            Err(e) => {
-                tracing::warn!("tray icon: not made: {e}");
-                return None;
+        let tray = {
+            let icon = match picture(px) {
+                Ok(icon) => icon,
+                Err(e) => {
+                    tracing::warn!("tray icon: no picture: {e}");
+                    return None;
+                }
+            };
+            let builder = TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_menu_on_left_click(false)
+                .with_tooltip(crate::MAIN_TITLE);
+            let builder = builder.with_icon(icon);
+            // Linux and the BSDs (StatusNotifierItem): the item's title is its name in the shell's
+            // lists, KDE's notification area among them, which showed MDM's icon with no name (#1305).
+            // Not on macOS, where a title is text beside the icon in the menu bar; Windows has none.
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let builder = builder.with_title(crate::MAIN_TITLE);
+            match builder.build() {
+                Ok(tray) => tray,
+                Err(e) => {
+                    tracing::warn!("tray icon: not made: {e}");
+                    return None;
+                }
             }
         };
 
@@ -553,21 +581,44 @@ impl Native {
         };
 
         let wake = |tx: &Sender<TrayCmd>, ctx: &egui::Context| (tx.clone(), ctx.clone());
-        let (icon_tx, icon_ctx) = wake(&tx, ctx);
-        TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = e
-            {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (icon_tx, icon_ctx) = wake(&tx, ctx);
+            // Windows sends a double click as down, up, double click, up: the last up is part of the
+            // double click, not a click of its own (it would open the panel again over the window).
+            let doubled: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+            TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+                let cmd = match e {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        position,
+                        ..
+                    } => {
+                        let last = doubled.lock().ok().and_then(|mut d| d.take());
+                        if last.is_some_and(|t| t.elapsed() < double_click()) {
+                            return;
+                        }
+                        TrayCmd::Click(click_at(position.x, position.y))
+                    }
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        if let Ok(mut d) = doubled.lock() {
+                            *d = Some(std::time::Instant::now());
+                        }
+                        TrayCmd::DoubleClick
+                    }
+                    _ => return,
+                };
                 // The window is asked for: a stall from now on is felt (crash.rs, #1126). Seen
                 // during one where the icon's events come on a thread of their own (Linux).
                 crate::crash::asked();
-                let _ = icon_tx.send(TrayCmd::Toggle);
+                let _ = icon_tx.send(cmd);
                 icon_ctx.request_repaint();
-            }
-        }));
+            }));
+        }
         let (menu_tx, menu_ctx) = wake(&tx, ctx);
         let download_ids: Arc<Mutex<Vec<(MenuId, u64)>>> = Arc::default();
         let ids = download_ids.clone();
@@ -642,7 +693,10 @@ impl Native {
             // tip's text, so the tip's own first line, the name again, is left out (#1305).
             #[cfg(not(target_os = "macos"))]
             let tip = without_name(tip);
+            #[cfg(not(target_os = "macos"))]
             let _ = self.tray.set_tooltip(Some(tip));
+            #[cfg(target_os = "macos")]
+            self.tray.set_tooltip(tip);
             true
         }
     }
@@ -763,17 +817,6 @@ fn short(name: &str) -> String {
     s.replace('&', "&&")
 }
 
-/// AppKit paints the mask for the status button's effective appearance, including selection.
-#[cfg(target_os = "macos")]
-fn menu_bar_icon() -> Result<tray_icon::Icon, String> {
-    let png = include_bytes!("../assets/icons/app/menu-bar-template.png");
-    let mask = image::load_from_memory_with_format(png, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    let (width, height) = mask.dimensions();
-    tray_icon::Icon::from_rgba(mask.into_raw(), width, height).map_err(|e| e.to_string())
-}
-
 /// The hand-made picture nearest the shell's icon size (#1161).
 #[cfg(not(target_os = "macos"))]
 fn picture(px: u32) -> Result<tray_icon::Icon, String> {
@@ -873,7 +916,7 @@ mod tests {
                     on_close(false, false, tray, icon, true, true),
                     OnClose::Quit
                 );
-                // Cmd+Q, MDM → Quit, Exit when done: quits.
+                // The status item's Exit and Exit when done quit.
                 assert_eq!(on_close(true, true, tray, icon, true, true), OnClose::Quit);
             }
         }
@@ -904,6 +947,14 @@ mod tests {
         );
     }
 
+    /// #1365: 0, 0 is a tray that didn't say where the click was, not the screen's corner.
+    #[test]
+    fn a_click_at_0_0_has_no_place() {
+        assert_eq!(click_at(0.0, 0.0), None);
+        assert_eq!(click_at(1834.4, 1062.6), Some((1834, 1063)));
+        assert_eq!(click_at(0.0, 12.0), Some((0, 12)));
+    }
+
     #[test]
     fn menu_names_are_shortened_and_keep_their_ampersands() {
         assert_eq!(short("a & b.zip"), "a && b.zip");
@@ -927,7 +978,12 @@ mod tests {
             assert!(picture(px).is_ok(), "{px} px");
         }
         #[cfg(target_os = "macos")]
-        assert!(menu_bar_icon().is_ok());
+        {
+            let image = image::load_from_memory(macos::TEMPLATE)
+                .unwrap()
+                .into_rgba8();
+            assert!(image.pixels().any(|pixel| pixel[3] > 0));
+        }
         #[cfg(target_os = "macos")]
         assert_eq!(
             crate::app_icon().width,

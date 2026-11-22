@@ -51,14 +51,19 @@ place; the file's date can follow the server's.
 A download's first request (`get`) follows redirects and the pages that lead on to a file by
 themselves (a waiting page's refresh). Sites whose links aren't the file's address have a module
 in `sites/` (Google Drive: `sites/gdrive.rs`; MediaFire: `sites/mediafire.rs`; Rapidgator:
-`sites/rapidgator.rs`): it turns the link into the file's address, reads the site's own pages (a
-confirmation form, a download button, an error page), names its refusals (`Error::Refused`) and,
+`sites/rapidgator.rs`; LuluStream: `sites/lulustream.rs`): it turns the link into the file's
+address, reads the site's own pages (a confirmation form, a download button, an error page),
+names its refusals (`Error::Refused`) and,
 where the file's addresses expire, the page that gives a fresh one (`sites::origin`, asked again
 when a connection meets an expired address, at most once per expiry and never again at once for
 an address it then refused; Rapidgator's page is the browser's tab the download came from,
-`Options::page`), with pure functions tested without a network. The lab server plays such a site
-on its real host names for the end-to-end tests (`labserver/src/drive.rs`,
-`labserver/src/mediafire.rs`, `labserver/src/rapidgator.rs`).
+`Options::page`), with pure functions tested without a network. A page whose file comes only once
+its form is sent back (LuluStream's quality page) says so with `PageSays::Form`: `get` posts that
+form's fields (`application/x-www-form-urlencoded`) with its next request only and reads the
+answer as a page; a site that answers with its form again is posted again, up to
+`MAX_FORM_POSTS`, and then refuses in the site's name (`sites::form_refused`). The lab server
+plays such a site on its real host names for the end-to-end tests (`labserver/src/drive.rs`,
+`labserver/src/mediafire.rs`, `labserver/src/rapidgator.rs`, `labserver/src/lulustream.rs`).
 
 FTP and FTPS (`ftp.rs`) go through the same planner, workers and state: a segment is `REST` +
 `RETR` on a control session instead of a ranged `GET`, `SIZE` and `MDTM` stand in for the
@@ -74,7 +79,9 @@ their Linux and macOS counterparts to `unix.rs` (starting with the session, the 
 sounds, show in folder, the crash handler); every other file is safe, portable Rust. Fonts come from the system:
 Windows' Fonts folder, macOS's system fonts, fontconfig on Linux (`theme.rs`). The interface language's
 script fonts load at start; text in another script gets its font the first time it shows: from MDM's
-lists of the system's fonts for each script, then, on Windows and macOS, from the system's own fallback
+lists of the system's fonts for each script (the first file there that has the letter; on Windows one
+Han list in the interface language's order, `theme::han_files`, for the fonts loaded at start, those
+found later and DirectWrite's alike), then, on Windows and macOS, from the system's own fallback
 (DirectWrite's, CoreText's, through fontique: `egui_system_font_provider`) for what the lists don't
 name; Linux asks fontconfig for any letter. On Windows, Latin,
 Greek, Cyrillic and single-codepoint CJK text is drawn by DirectWrite (`win32.rs`, through egui's glyph rasterizer hook):

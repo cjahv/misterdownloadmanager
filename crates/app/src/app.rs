@@ -446,7 +446,7 @@ fn menu_answer(step: DupStep, start_now: bool) -> &'static str {
 
 /// Menu, toolbar and context-menu commands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Cmd {
+pub(crate) enum Cmd {
     AddUrl,
     /// Help → a page of the website (`""` = home).
     HelpPage(&'static str),
@@ -472,6 +472,8 @@ enum Cmd {
     /// Tasks → Show drop target (shown / hidden); the drop target's Show main window.
     ToggleDropTarget,
     ShowMain,
+    #[cfg(target_os = "macos")]
+    HideApplication,
     /// Tasks → Export / Import (D-021): IDM's export file (.ef2) or a text file.
     Export {
         ef2: bool,
@@ -1393,6 +1395,11 @@ pub struct App {
     after_stop: Vec<(u64, Option<(PathBuf, bool)>)>,
     /// Tasks → Show drop target: the floating box links are dragged onto.
     drop_target: Option<crate::droptarget::DropTarget>,
+    /// The tray icon's downloads panel while it shows (#1365).
+    tray_panel: Option<crate::traypanel::Panel>,
+    /// When the panel last closed by losing the focus: a click on the icon then is the click
+    /// that took the focus from it, and closes it rather than opening it again.
+    tray_panel_closed: Option<Instant>,
     /// Links and files dropped on the main window.
     drops: crate::droptarget::Drops,
     /// The queue selection panel after Download Later / a batch: the downloads waiting for it.
@@ -1517,6 +1524,9 @@ pub struct App {
     last_find: Option<crate::find::Query>,
     /// A message with OK: its window title and message: "Cannot find …", an export that failed…
     notice: Option<(&'static str, String)>,
+    /// The first private-window download came (#1581): the notice saying they are kept, and
+    /// where to turn that off, waits for the message window to be free (`App::private_added`).
+    private_notice: bool,
     file_confirmation: Option<dialogs::Confirmation>,
     /// The list files Import is reading, beside the window (#805).
     importing: crate::transfer::Importing,
@@ -1551,6 +1561,9 @@ pub struct App {
     /// The notification-area icon (created on the first frame), the window hidden in it, and
     /// a real exit under way (closing the window otherwise only hides it, as IDM does).
     tray: Option<crate::tray::Tray>,
+    /// The policy AppKit actually accepted, independent of the saved preference.
+    #[cfg(target_os = "macos")]
+    dock_hidden: bool,
     /// Linux: the icon being made beside the window (#828: its library waits for the session
     /// bus); `tray` once it is.
     #[cfg(target_os = "linux")]
@@ -2215,6 +2228,8 @@ impl App {
             video_places: crate::videoplace::VideoPlaces::new(std::sync::Arc::new(video_place)),
             queue_pick: None,
             drop_target: None,
+            tray_panel: None,
+            tray_panel_closed: None,
             drops: Default::default(),
             after_stop: Vec::new(),
             confirm_category_delete: None,
@@ -2264,6 +2279,7 @@ impl App {
             find: None,
             last_find: None,
             notice: None,
+            private_notice: false,
             file_confirmation: None,
             importing: Default::default(),
             save_failed: None,
@@ -2278,6 +2294,8 @@ impl App {
             limit_notice: None,
             batch_clip: None,
             tray: None,
+            #[cfg(target_os = "macos")]
+            dock_hidden: false,
             #[cfg(target_os = "linux")]
             tray_setup: None,
             tray_limiter: None,
@@ -2629,6 +2647,10 @@ impl App {
                 .then(|| self.limit_of(it, running))
                 .flatten()
                 .map(model::Limit::tip),
+            // A private window's (#1581): marked, and whether the list keeps it.
+            private: it
+                .private_mark(self.settings.keep_private_downloads)
+                .map(|m| m.tip().to_owned()),
         }
     }
 
@@ -2946,10 +2968,58 @@ impl App {
         // The page it was started from (#607), whole: Refresh download address opens it.
         item.page = context.page_url.clone().filter(|p| !p.is_empty());
         item.private_window = context.private;
+        let private = context.private;
         item.context = context;
         self.items.push(item);
         self.dirty = true;
+        if private {
+            self.private_added(id);
+        }
         id
+    }
+
+    /// Download `id` came from a private (incognito) window (#1581): one line in the log, with
+    /// neither its name nor its address, saying whether the list keeps it; and the first time
+    /// one comes, a notice that they are kept and where that is turned off (once: the flag is
+    /// saved with the settings). Unticked, the user chose it in Options: no notice.
+    fn private_added(&mut self, id: u64) {
+        let kept = self.settings.keep_private_downloads;
+        tracing::info!(
+            "download {id} from a private window: {}",
+            if kept { "kept" } else { "memory only" }
+        );
+        if !self.settings.private_notice_shown {
+            self.settings.private_notice_shown = true;
+            // A server (#157) has no screen to say it on.
+            self.private_notice = kept && !self.headless;
+        }
+    }
+
+    /// The first private-window download's notice (#1581, [`Self::private_added`]): shown
+    /// once the message window is free.
+    fn show_private_notice(&mut self) {
+        if !self.private_notice || self.notice.is_some() {
+            return;
+        }
+        self.private_notice = false;
+        self.notice = Some((
+            // i18n: title of the notice shown once, the first time a download comes from a browser's private (incognito) window
+            crate::i18n::mark("Private-window downloads"),
+            crate::i18n::fmt(
+                // i18n: the notice shown once, the first time a download comes from a browser's private (incognito) window: it stays in MDM's list like any other, after a restart too; where to turn that off. {options} = the Options window, {general} = its General tab, {checkbox} = the checkbox "Keep private-window downloads in the list"
+                crate::i18n::t(
+                    "Downloads from a browser's private window stay in MDM's list like any other, also after MDM restarts; their cookies are never saved. To keep them in memory only, untick {options} → {general} → {checkbox}.",
+                ),
+                &[
+                    ("options", crate::i18n::t("Options")),
+                    ("general", crate::i18n::t("General")),
+                    (
+                        "checkbox",
+                        crate::i18n::t("Keep private-window downloads in the list"),
+                    ),
+                ],
+            ),
+        ));
     }
 
     /// Download `id` skips the debrid accounts, or goes through them again (#44).
@@ -3305,6 +3375,36 @@ impl App {
                     self.drop_target_menu(at, ctx);
                 }
             }
+            // Off-screen test copies: the tray icon's downloads panel (#1365's shots and checks),
+            // as a click on the icon opens it, here beside the main window (a posted click has
+            // no icon to land on); `tray-panel:paused` with its first download paused from it,
+            // `tray-panel:idle` with every download stopped (nothing running).
+            "tray-panel" if crate::offscreen() => {
+                let at = ctx
+                    .input(|i| i.viewport().outer_rect)
+                    .map_or(egui::pos2(600.0, 400.0), |r| {
+                        r.min + egui::vec2(600.0, 400.0)
+                    });
+                let mut panel = crate::traypanel::Panel::new(Some(at));
+                let running: Vec<u64> = self
+                    .items
+                    .iter()
+                    .filter(|i| i.live.is_some())
+                    .map(|i| i.id)
+                    .collect();
+                match tab {
+                    "paused" => {
+                        if let Some(id) = running.first() {
+                            panel.paused(*id);
+                            self.stop_by_hand(*id);
+                        }
+                    }
+                    "idle" => running.iter().for_each(|id| self.stop_by_hand(*id)),
+                    _ => {}
+                }
+                self.tray_panel = Some(panel);
+                ctx.request_ui_pass(egui::ViewportId::ROOT);
+            }
             // The main window minimized, not to the tray (tests of #162).
             "minimized" => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             // Off-screen test copies: the interface zoomed (`zoom:1.5`) while running, as a
@@ -3324,6 +3424,8 @@ impl App {
             "torrent-settings" => self.run(Cmd::TorrentSettings, None, ctx),
             // The first download's: Add trackers (a torrent), its right-click menu.
             "add-trackers" if first.is_some() => self.run(Cmd::TorrentAddTrackers, first, ctx),
+            // The first download's Torrent → Files... (a torrent).
+            "torrent-files" if first.is_some() => self.run(Cmd::TorrentFiles, first, ctx),
             // rss:rules opens it on its Download rules tab.
             "rss" => self.run(Cmd::RssFeeds(tab == "rules"), None, ctx),
             // menu:torrent opens it with its Torrent submenu open. A number (menu:3) is the
@@ -3500,7 +3602,7 @@ impl App {
             "menu" => {
                 self.popup = None;
                 let (index, sub) = tab.split_once(':').unwrap_or((tab, ""));
-                let index = index.parse().unwrap_or(0);
+                let index = index.parse::<usize>().unwrap_or(0).min(4);
                 self.open_menu = Some(index);
                 // menu:3:theme opens View → Theme (#45), menu:3:size View → Interface size (#262).
                 let wanted = match sub {
@@ -4382,6 +4484,13 @@ impl App {
         }
     }
 
+    /// A download's Cancel, in its progress window or the tray icon's panel (#1365): stopped
+    /// (a live recording killed, not saved: `stop`), and its progress window closed.
+    fn cancel_download(&mut self, id: u64) {
+        self.stop(id);
+        self.progress.retain(|p| p.id != id);
+    }
+
     /// The user's Stop (or Pause): it stays stopped, even in a queue that is running (#341).
     fn stop_by_hand(&mut self, id: u64) {
         self.halt(id);
@@ -4747,19 +4856,39 @@ impl App {
         self.trim_when_hidden = Some(Instant::now() + next_trim(0));
     }
 
+    #[cfg(target_os = "macos")]
+    fn can_hide_dock(&self) -> bool {
+        self.settings.hide_dock_icon
+            && self
+                .tray
+                .as_ref()
+                .is_some_and(|tray| tray.icon() == crate::tray::Icon::There)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_dock_visibility(&mut self, hide: bool) {
+        if self.dock_hidden != hide && crate::unix::set_dock_hidden(hide) {
+            self.dock_hidden = hide;
+        }
+    }
+
     /// The window back from the tray (or from minimized), in front.
     fn show_window(&mut self, ctx: &egui::Context) {
         // Asked for (a second launch, the tray icon): no start with the session or browser to settle.
         self.tray_wait = None;
         self.trim_when_hidden = None;
         self.hidden = false;
+        #[cfg(target_os = "macos")]
+        self.apply_dock_visibility(false);
         // The freeze watchdog: from here a stall is seen (no longer the computer's, #1126).
         crate::crash::hidden(false);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        #[cfg(target_os = "macos")]
         if !crate::offscreen() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            crate::unix::macos_show_main_window();
         }
+        crate::dialogs::focus(ctx, egui::ViewportId::ROOT);
         ctx.request_repaint();
     }
 
@@ -4913,6 +5042,11 @@ impl App {
                 crate::tray::Came::Failed => self.tray_setup = None,
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            let hide = self.can_hide_dock() && (self.hidden || crate::unix::macos_app_hidden());
+            self.apply_dock_visibility(hide);
+        }
         if !crate::offscreen() {
             let spec = self
                 .options
@@ -4945,6 +5079,13 @@ impl App {
         }
         if let (Some(t), Some(q)) = (&self.tray, self.queues.first()) {
             t.set_queue(q.running);
+        }
+        // The panel is drawn in the main window's pass, which a hidden or minimized main window
+        // runs only when asked (#1365): asked until the panel is on the screen. From then on
+        // eframe runs that pass with each of the panel's frames (its beat, an input on it), as it
+        // does for any window of ours that shows, so nothing is asked every frame.
+        if self.tray_panel.as_ref().is_some_and(|p| !p.up(ctx)) {
+            ctx.request_ui_pass(egui::ViewportId::ROOT);
         }
         if let Some(t) = &self.tray {
             let mut tip = match self.activity() {
@@ -4997,11 +5138,36 @@ impl App {
             use crate::tray::TrayCmd;
             tracing::info!("tray: {c:?}");
             let cmd = match c {
+                #[cfg(target_os = "macos")]
+                TrayCmd::Click(_)
+                    if self.dock_hidden || self.hidden || crate::unix::macos_app_hidden() =>
+                {
+                    self.tray_panel = None;
+                    self.show_window(ctx);
+                    continue;
+                }
                 TrayCmd::Show => {
                     self.show_window(ctx);
                     continue;
                 }
-                TrayCmd::Toggle => {
+                // A click on the icon: the downloads panel there (#1365), or with Options' "Show
+                // downloads when the notification area icon is clicked" unticked the window shown
+                // or hidden, as before.
+                TrayCmd::Click(at) if self.settings.tray_panel => {
+                    let at =
+                        at.map(|(x, y)| egui::pos2(x as f32, y as f32) / ctx.pixels_per_point());
+                    self.toggle_tray_panel(at, ctx);
+                    continue;
+                }
+                // The panel's double click: the window (the click before it opened the panel).
+                TrayCmd::DoubleClick => {
+                    if self.settings.tray_panel {
+                        self.tray_panel = None;
+                        self.show_window(ctx);
+                    }
+                    continue;
+                }
+                TrayCmd::Click(..) => {
                     let minimized = ctx.input(|i| i.viewport().minimized == Some(true));
                     // Behind other windows it still reads as shown: only hide when
                     // frontmost, otherwise bring it forward. On Windows the tray
@@ -5050,7 +5216,7 @@ impl App {
         // off, no tray at all, or Linux with no tray host (#59: a hidden window couldn't come
         // back, and one that merely minimized could never be closed). macOS (#1125): the window
         // closes into the Dock, as Mac apps' do, and a click on MDM's icon there brings it back.
-        // Asked to quit (`quit`: File → Exit, Cmd+Q, MDM → Quit, Exit when done…), the close quits
+        // Asked to quit (`quit`: the status menu’s Exit, /exit, Exit when done…), the close quits
         // whatever the option.
         if ctx.input(|i| i.viewport().close_requested()) {
             use crate::tray::OnClose;
@@ -5058,7 +5224,7 @@ impl App {
             let keep = self.settings.close_to_tray;
             let tray = self.tray.is_some();
             #[cfg(target_os = "macos")]
-            let dock = crate::unix::open_events::dock_reopens();
+            let dock = !self.dock_hidden && crate::unix::open_events::dock_reopens();
             #[cfg(not(target_os = "macos"))]
             let dock = false;
             // The shell's answer, only when it matters (macOS: asked afresh).
@@ -6374,7 +6540,7 @@ impl App {
             let dir = self
                 .settings
                 .category_dir(Category::Torrents, &self.downloads);
-            self.add_remote_torrent(magnet, dir, Category::Torrents, true, None);
+            self.add_remote_torrent(magnet, dir, Category::Torrents, true, None, None, None);
             self.show_window(ctx);
             return;
         }
@@ -6415,6 +6581,8 @@ impl App {
 
     /// A torrent through the debrid account (#44): a row whose files come over HTTP once the
     /// service has them, into `dir` (a torrent of several files in a folder of its own there).
+    /// `files`: the paths ticked in Add torrent (None: all), `size` theirs when known.
+    #[allow(clippy::too_many_arguments)]
     fn add_remote_torrent(
         &mut self,
         magnet: url::Url,
@@ -6422,6 +6590,8 @@ impl App {
         category: Category,
         start_now: bool,
         renamed: Option<String>,
+        files: Option<Vec<String>>,
+        size: Option<u64>,
     ) {
         let Some((account, service)) = self.torrent_account() else {
             return;
@@ -6445,13 +6615,20 @@ impl App {
             target,
             category,
             String::new(),
-            None,
+            size,
             None,
             Default::default(),
             crate::i18n::mark("from a magnet link"),
         );
         if let Some(item) = self.item(id) {
             item.preexisting_folder = preexisting;
+            if let Some(f) = &files {
+                item.note(crate::i18n::fmt(
+                    // i18n: event log: a torrent through a debrid account gets only the files ticked in Add torrent; {files} how many ("3")
+                    crate::i18n::t("Only the {files} file(s) ticked in Add torrent"),
+                    &[("files", &f.len().to_string())],
+                ));
+            }
             item.note(crate::i18n::fmt(
                 // i18n: event log: a torrent goes through the user's debrid account, not to peers; {service} its name ("Real-Debrid")
                 crate::i18n::t(
@@ -6464,6 +6641,7 @@ impl App {
                 transfer: None,
                 folder: dir,
                 renamed,
+                files,
             });
         }
         self.selection.set(id);
@@ -6500,6 +6678,7 @@ impl App {
                 transfer: spec.transfer.clone(),
                 folder: spec.folder.clone(),
                 renamed: spec.renamed.clone(),
+                files: spec.files.clone(),
                 net,
                 poll: std::time::Duration::from_secs(5),
             },
@@ -6522,7 +6701,7 @@ impl App {
     }
 
     /// Add torrent → Download Now / Later. Through the debrid account when torrents go there
-    /// (#44): the .torrent's magnet link (its hash, name and trackers), all its files. The
+    /// (#44): the .torrent's magnet link (its hash, name and trackers) and the files ticked. The
     /// download added, if one was (not when the debrid account takes it).
     fn add_torrent(&mut self, add: crate::torrentdlg::TorrentAdd) -> Option<u64> {
         let meta = &add.meta;
@@ -6580,12 +6759,17 @@ impl App {
                 mdm_torrent::magnet_link(&meta.torrent).and_then(|m| url::Url::parse(&m).ok())
         {
             let renamed = crate::torrent_rename::renamed_target(meta);
+            // Only the files ticked go to the service's list of files to download, matched
+            // there by path (each service numbers them its own way).
+            let (files, size) = crate::torrents::remote_choice(meta, add.files.as_deref());
             self.add_remote_torrent(
                 magnet,
                 add.dir.clone(),
                 add.category,
                 add.start_now,
                 renamed,
+                files,
+                Some(size).filter(|s| *s > 0),
             );
             return None;
         }
@@ -8183,7 +8367,7 @@ impl App {
     /// `target`: the right-clicked download, if any. Stop, Resume, Remove and the queue
     /// commands act on every selected download (or the right-clicked one outside the
     /// selection); the others on one download.
-    fn run(&mut self, cmd: Cmd, target: Option<u64>, ctx: &egui::Context) {
+    pub(crate) fn run(&mut self, cmd: Cmd, target: Option<u64>, ctx: &egui::Context) {
         // The log a crash report quotes: what was asked for (commands carry no addresses).
         tracing::info!("command {cmd:?}");
         let many = self.targets(target);
@@ -8595,6 +8779,15 @@ impl App {
             Cmd::ToggleDropTarget => {
                 self.settings.drop_target = !self.settings.drop_target;
                 self.dirty = true;
+            }
+            #[cfg(target_os = "macos")]
+            Cmd::HideApplication => {
+                if crate::unix::macos_only_main_window_visible() {
+                    self.hide_to_tray(ctx);
+                    ctx.request_repaint();
+                } else {
+                    crate::unix::macos_hide_app();
+                }
             }
             Cmd::ShowMain => self.show_window(ctx),
             Cmd::Export { ef2 } => self.export(ef2),
@@ -9133,7 +9326,7 @@ impl App {
     // ---- menus -----------------------------------------------------------------------------
 
     /// IDM 6.42's menus (notes/ui-spec/menus.md); unbuilt features are greyed out.
-    fn menu_entries(&self, index: usize) -> Vec<MenuEntry<Cmd>> {
+    pub(crate) fn menu_entries(&self, index: usize) -> Vec<MenuEntry<Cmd>> {
         use MenuEntry::{Item as I, Sep, Sub};
         let sel = self.selected_item();
         let picked = self.chosen(None);
@@ -9207,7 +9400,9 @@ impl App {
                         ),
                     ],
                 ),
+                #[cfg(not(target_os = "macos"))]
                 Sep,
+                #[cfg(not(target_os = "macos"))]
                 I("&Exit", Cmd::Exit, true, false),
             ],
             1 => vec![
@@ -10182,9 +10377,29 @@ impl App {
     /// first item is lit, as Windows lights it, and a screen reader says it at once (#1190).
     fn open_popup_asked(&mut self, kind: Popup, at: Pos2, ctx: &egui::Context) {
         self.open_popup(kind, at);
-        if !ctx.input(|i| i.pointer.any_released()) {
+        if !self.uses_native_popup() && !ctx.input(|i| i.pointer.any_released()) {
             chrome::start_keyboard(ctx, &format!("popup-{}", self.popup_serial));
         }
+    }
+
+    fn uses_native_popup(&self) -> bool {
+        crate::theme::mac_layout()
+            && !crate::offscreen()
+            && !matches!(self.popup, Some((Popup::DropTarget, ..)))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn take_native_popup(&mut self) -> Option<crate::unix::macos_menu::PopupMenu> {
+        if self.popup.is_none() || !self.uses_native_popup() {
+            return None;
+        }
+        let (kind, at, _) = self.popup.take()?;
+        let (entries, target) = self.popup_entries(kind);
+        Some(crate::unix::macos_menu::PopupMenu {
+            at,
+            entries,
+            target,
+        })
     }
 
     fn open_popup(&mut self, kind: Popup, at: Pos2) {
@@ -10278,18 +10493,9 @@ impl App {
         }
     }
 
-    fn paint(&mut self, ui: &mut Ui) {
+    fn window_menu(&mut self, ui: &mut Ui, o: egui::Pos2, w: f32) -> Option<(Cmd, Option<u64>)> {
         let ctx = ui.ctx().clone();
-        let full = ui.max_rect();
-        // The client area, laid out from the right in a right-to-left interface (winui).
-        let _surface = winui::Surface::enter(full.min.x, full.max.x);
-        // A style theme's title bar, drawn above the layout (Windows; #45), mirrored right to
-        // left as the progress window's.
-        let full = self.drawn_caption(ui, full);
-        let o = full.min;
-        let (w, h) = (full.width(), full.height());
-        let mut chosen: Option<(Cmd, Option<u64>)> = None;
-
+        let mut chosen = None;
         // The menu bar from the keyboard: F10 or Alt pressed alone opens its first menu, Alt and a
         // menu's underlined letter that menu (Windows and Linux); on macOS, whose apps have no
         // Alt keys, Ctrl+F2 (the system's key for the menu bar).
@@ -10452,7 +10658,9 @@ impl App {
         }
 
         // Menu bar and its popups: which menu is open is chrome::menubar_next's to say.
-        if let Some(event) = chrome::menu_bar(ui, o, w, self.open_menu) {
+        if !cfg!(target_os = "macos")
+            && let Some(event) = chrome::menu_bar(ui, o, w, self.open_menu)
+        {
             if event == chrome::MenuBarEvent::Keys {
                 self.give_keys(Pane::Bar);
             }
@@ -10505,6 +10713,25 @@ impl App {
             }
         }
 
+        chosen
+    }
+
+    fn paint(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let full = ui.max_rect();
+        // The client area, laid out from the right in a right-to-left interface (winui).
+        let _surface = winui::Surface::enter(full.min.x, full.max.x);
+        // A style theme's title bar, drawn above the layout (Windows; #45), mirrored right to
+        // left as the progress window's.
+        let full = self.drawn_caption(ui, full);
+        let o = full.min;
+        let (w, h) = (full.width(), full.height());
+        let mut chosen = if cfg!(target_os = "macos") && self.open_menu.is_none() {
+            None
+        } else {
+            self.window_menu(ui, o, w)
+        };
+
         // The keys go round the toolbar, the Categories tree and the download list with Tab and
         // Shift+Tab (`tab_to`), while no menu is open and no text box has them (#1190: the
         // toolbar couldn't be reached at all). A press anywhere takes them from the toolbar (the
@@ -10534,6 +10761,12 @@ impl App {
                     None
                 };
                 let pane = tab_to(from, self.show_categories, back);
+                #[cfg(target_os = "macos")]
+                let pane = if pane == Pane::Bar {
+                    tab_to(Some(Pane::Bar), self.show_categories, back)
+                } else {
+                    pane
+                };
                 self.give_keys(pane);
                 crate::chrome::show_cues(&ctx);
             }
@@ -10607,7 +10840,7 @@ impl App {
             let cat_w = (self.settings.categories_width as f32).clamp(100.0, max_w);
             let right = o.x + 6.0 + cat_w;
             let split = winui::rect(egui::Rect::from_min_max(
-                pos2(right, o.y + chrome::MENU_H + chrome::pane_top()),
+                pos2(right, o.y + chrome::WINDOW_MENU_H + chrome::pane_top()),
                 pos2(right + 4.0, o.y + h - STRIP_H - 5.0),
             ));
             let sr = ui.interact(
@@ -10718,7 +10951,10 @@ impl App {
         self.selection.retain(&ids);
         let (selected, focus) = self.selection.rows(&ids);
         let outer = egui::Rect::from_min_max(
-            pos2(o.x + list_left, o.y + chrome::MENU_H + chrome::pane_top()),
+            pos2(
+                o.x + list_left,
+                o.y + chrome::WINDOW_MENU_H + chrome::pane_top(),
+            ),
             pos2(o.x + w - 7.0, o.y + h - STRIP_H - 4.0),
         );
         self.list.menu_open = self.popup.is_some() || self.open_menu.is_some();
@@ -10820,7 +11056,9 @@ impl App {
         if let Some(pos) = r.header_context {
             self.open_popup(Popup::Columns, pos);
         }
-        if let Some((kind, pos, serial)) = self.popup {
+        if self.popup.is_some() && self.uses_native_popup() {
+            ctx.request_repaint();
+        } else if let Some((kind, pos, serial)) = self.popup {
             let (entries, target) = self.popup_entries(kind);
             match chrome::popup(
                 &ctx,
@@ -11194,6 +11432,75 @@ impl App {
         } else if self.settings.show_progress && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
+        }
+    }
+
+    /// A click on the tray icon with Options' "Show downloads when the notification area icon is
+    /// clicked" ticked (#1365): the panel at `at` (screen, points; None where the tray didn't
+    /// say), or closed when it shows, or just closed by this very click (which took the focus
+    /// from it).
+    fn toggle_tray_panel(&mut self, at: Option<egui::Pos2>, ctx: &egui::Context) {
+        let just_closed = self
+            .tray_panel_closed
+            .take()
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+        if self.tray_panel.take().is_none() && !just_closed {
+            self.tray_panel = Some(crate::traypanel::Panel::new(at));
+            // macOS: hidden from the menu bar icon, the whole app is hidden and draws no window:
+            // unhidden for the panel, as for the windows a command opens (`tick`). The main
+            // window stays hidden.
+            #[cfg(target_os = "macos")]
+            if !crate::offscreen() {
+                crate::unix::macos_unhide_app();
+            }
+            ctx.request_ui_pass(egui::ViewportId::ROOT);
+        }
+    }
+
+    /// The tray icon's downloads panel while it shows (#1365), and what was asked in it.
+    fn show_tray_panel(&mut self, ctx: &egui::Context) {
+        let Some(panel) = &mut self.tray_panel else {
+            return;
+        };
+        use crate::traypanel::Event;
+        for event in panel.show(ctx, &self.items) {
+            tracing::info!("tray panel: {event:?}");
+            match event {
+                Event::Pause(id) => {
+                    if let Some(p) = &mut self.tray_panel {
+                        p.paused(id);
+                    }
+                    self.stop_by_hand(id);
+                }
+                // Its progress window isn't opened ("Show download progress dialog" or not): it
+                // would take the focus and close the panel under the pointer.
+                Event::Resume(id) => {
+                    if let Some(p) = &mut self.tray_panel {
+                        p.forget(id);
+                    }
+                    self.start(id, false);
+                }
+                Event::Cancel(id) => {
+                    if let Some(p) = &mut self.tray_panel {
+                        p.forget(id);
+                    }
+                    self.cancel_download(id);
+                }
+                Event::OpenMain => {
+                    self.tray_panel = None;
+                    self.show_window(ctx);
+                    #[cfg(target_os = "macos")]
+                    if !crate::offscreen() {
+                        crate::unix::macos_activate_and_show();
+                    }
+                    return;
+                }
+                Event::Close => {
+                    self.tray_panel = None;
+                    self.tray_panel_closed = Some(Instant::now());
+                    return;
+                }
+            }
         }
     }
 
@@ -12922,10 +13229,7 @@ impl App {
                 progress::Action::None => {}
                 progress::Action::Pause => self.stop_by_hand(id),
                 progress::Action::Resume => self.start(id, true),
-                progress::Action::Cancel => {
-                    self.stop(id);
-                    self.progress.retain(|p| p.id != id);
-                }
+                progress::Action::Cancel => self.cancel_download(id),
                 progress::Action::Rename(name) => {
                     if let Some(item) = self.item(id) {
                         item.rename_on_complete = name;
@@ -13136,6 +13440,9 @@ impl eframe::App for App {
         // MDM's own work: not counted as the graphics API's time to its first frame (#280).
         crate::renderer::own_work_begin();
         self.tick(ctx);
+        // The windows asked to the front that show now (dialogs::focus).
+        #[cfg(windows)]
+        crate::dialogs::focus_pending(ctx);
         crate::renderer::own_work_end();
     }
 
@@ -13219,6 +13526,7 @@ impl App {
         if let Some((title, text)) = dialogs::told().pop() {
             self.notice = Some((title, text));
         }
+        self.show_private_notice();
         crate::crash::step(crate::crash::Step::Limits);
         self.apply_global_limit();
         // MDM's own helpers kept up to date (#1544), a server's too (its image doesn't hold them).
@@ -13296,6 +13604,7 @@ impl App {
         self.poll_cnl(&ctx);
         self.poll_imports();
         self.drop_target(&ctx);
+        self.show_tray_panel(&ctx);
         self.main_drops(&ctx);
         self.remember_layout(&ctx);
         // Light or dark: IDM follows Windows' app mode (checked every 2 s) unless View → Dark
@@ -13437,15 +13746,14 @@ impl App {
 impl Drop for App {
     /// Exit, a closed window that quits, a headless run's end: [`App::finish`].
     fn drop(&mut self) {
-        // macOS ends the program right after this when it quits MDM itself (Cmd+Q, MDM → Quit,
-        // the Dock's Quit, logging out): eframe drops the app on the way, and `main` never
-        // gets its turn to say the exit was clean (#1125).
+        // macOS can end the process here at logout. eframe drops the app on the way,
+        // before main can mark this as a clean exit (#1125).
         #[cfg(target_os = "macos")]
         let by_the_system = !self.exiting;
         self.finish(None);
         #[cfg(target_os = "macos")]
         if by_the_system {
-            tracing::info!("quit by macOS (Cmd+Q, the menu's or the Dock's Quit, logging out)");
+            tracing::info!("quit by macOS (external termination or end of session)");
             crate::crash::clean_exit();
         }
     }
@@ -16881,6 +17189,60 @@ mod fresh_address_tests {
         );
         assert_eq!(get(&app, 1).url, old);
         assert!(get(&app, 1).private_window);
+    }
+
+    /// #1581: a private window's download is marked in the list (kept, by default), and the
+    /// first one brings the notice that says so, once: the flag is saved with the settings.
+    #[test]
+    fn a_private_windows_download_is_marked_and_noticed_once() {
+        let rt = runtime();
+        let ctx = egui::Context::default();
+        let private = |n: u32| ipc::Command {
+            private: true,
+            ..browser(&format!("http://127.0.0.1:9/p{n}/data.bin"), SIZE, 9)
+        };
+        let mut app = app_with(rt, vec![]);
+        assert!(app.settings.keep_private_downloads && !app.settings.private_notice_shown);
+        app.handle_command(browser("http://127.0.0.1:9/n/data.bin", SIZE, 9), &ctx);
+        assert!(
+            !app.private_notice && !app.settings.private_notice_shown,
+            "a normal one"
+        );
+        app.handle_command(private(1), &ctx);
+        assert_eq!(app.items.len(), 2);
+        assert!(app.settings.private_notice_shown && app.private_notice);
+        app.show_private_notice();
+        assert!(!app.private_notice);
+        let (title, text) = app.notice.take().expect("the notice");
+        assert_eq!(title, "Private-window downloads");
+        assert!(
+            text.contains("Keep private-window downloads in the list"),
+            "{text}"
+        );
+        // The second one: no notice again.
+        app.handle_command(private(2), &ctx);
+        assert!(!app.private_notice);
+        app.show_private_notice();
+        assert!(app.notice.is_none());
+        // The rows' marks: none on the normal one, kept on the private ones.
+        let none = std::collections::HashSet::new();
+        let marks: Vec<Option<String>> = app
+            .items
+            .iter()
+            .map(|i| app.row(i, &none, 0).private)
+            .collect();
+        let kept = Some(model::PrivateMark::Kept.tip().to_owned());
+        assert_eq!(marks, [None, kept.clone(), kept]);
+        // Unticked: in memory only, said so, and no notice (the user chose it in Options).
+        let mut app = app_with(rt, vec![]);
+        app.settings.keep_private_downloads = false;
+        app.handle_command(private(3), &ctx);
+        assert!(!app.private_notice);
+        let it = &app.items[0];
+        assert_eq!(
+            app.row(it, &none, 0).private.as_deref(),
+            Some(model::PrivateMark::MemoryOnly.tip())
+        );
     }
 }
 

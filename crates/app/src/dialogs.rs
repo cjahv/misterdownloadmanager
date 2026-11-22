@@ -299,7 +299,7 @@ pub fn keep_theme(
                     if lifted {
                         tracing::info!("window {title:?} shown behind another program's: lifted");
                     }
-                    ctx.send_viewport_cmd_to(vid, egui::ViewportCommand::Focus);
+                    focus(ctx, vid);
                     TRIES
                 }
                 None => {
@@ -608,7 +608,7 @@ fn dialog_window<T>(
     if takes_focus && matches!(out, Outcome::Open) && !crate::offscreen() {
         let shown = ctx.data(|d| d.get_temp::<bool>(key.with("shown")).unwrap_or(false));
         if shown && !ctx.data(|d| d.get_temp::<bool>(focused).unwrap_or(false)) {
-            ctx.send_viewport_cmd_to(ViewportId::from_hash_of(id), egui::ViewportCommand::Focus);
+            focus(ctx, ViewportId::from_hash_of(id));
             ctx.data_mut(|d| d.insert_temp(focused, true));
         }
     }
@@ -855,25 +855,50 @@ impl AddUrl {
             self.fill_from_clipboard(&clip);
         }
         self.follow_site_login(site_login);
+        let mac = crate::theme::mac_layout();
         window(
             ctx,
             "add-url",
             "Enter new address to download",
-            [560.0, 93.0],
+            if mac { [480.0, 216.0] } else { [560.0, 93.0] },
             false,
             winui::BG(),
             |ui, o| {
                 let p = ui.painter().clone();
-                // i18n: noun: the web address (URL)
-                winui::text(
-                    &p,
-                    o.x + 12.0,
-                    o.y + 25.0,
-                    crate::i18n::t("Address"),
-                    winui::TEXT(),
-                );
-                let addr_rc = r(o, 68.0, 11.0, 396.0, 21.0);
+                let address_label = crate::i18n::t("Address");
+                let login_label = crate::i18n::t("Login");
+                let password_label = crate::i18n::t("Password");
+                let field_x = if mac {
+                    [address_label, login_label, password_label]
+                        .iter()
+                        .map(|s| winui::text_width(&p, s))
+                        .fold(60.0, f32::max)
+                        .min(148.0)
+                        + 28.0
+                } else {
+                    68.0
+                };
+                if mac {
+                    winui::fit(
+                        ui,
+                        &p,
+                        o.x + 16.0,
+                        o.y + 32.0,
+                        address_label,
+                        winui::TEXT(),
+                        o.x + field_x - 10.0,
+                        "address-label",
+                    );
+                } else {
+                    winui::text(&p, o.x + 12.0, o.y + 25.0, address_label, winui::TEXT());
+                }
+                let addr_rc = if mac {
+                    r(o, field_x, 16.0, 464.0 - field_x, 26.0)
+                } else {
+                    r(o, 68.0, 11.0, 396.0, 21.0)
+                };
                 let addr = winui::combo_edit(ui, addr_rc, &mut self.address);
+                winui::name(&addr, address_label);
                 // An error about the address goes once it is edited.
                 if addr.changed() {
                     self.error = None;
@@ -910,26 +935,33 @@ impl AddUrl {
                     )
                 {
                     self.address = self.history[i].clone();
+                    self.error = None;
                     addr.request_focus();
                 }
                 // Enter presses the default button (OK), as in IDM, wherever the focus is.
                 let _ = &addr;
                 let enter = winui::enter_pressed(ui);
 
-                winui::group_box(
-                    &p,
-                    r(o, 11.0, 45.0, 453.0, 40.0),
-                    Some(winui::caption_gap(
+                if !mac {
+                    winui::group_box(
                         &p,
-                        o.x + 20.0,
-                        o.x + 124.0,
-                        "Use authorization",
-                        false,
-                    )),
-                );
+                        r(o, 11.0, 45.0, 453.0, 40.0),
+                        Some(winui::caption_gap(
+                            &p,
+                            o.x + 20.0,
+                            o.x + 124.0,
+                            "Use authorization",
+                            false,
+                        )),
+                    );
+                }
                 winui::checkbox(
                     ui,
-                    o + vec2(20.0, 39.0),
+                    if mac {
+                        o + vec2(field_x, 67.0)
+                    } else {
+                        o + vec2(20.0, 39.0)
+                    },
                     &mut self.auth,
                     "Use authorization",
                     true,
@@ -939,33 +971,43 @@ impl AddUrl {
                 } else {
                     winui::TEXT_DISABLED()
                 };
-                // i18n: noun: the user name and password section
-                winui::text(&p, o.x + 84.0, o.y + 69.0, crate::i18n::t("Login"), label);
-                winui::edit(
-                    ui,
-                    r(o, 116.0, 55.0, 117.0, 23.0),
-                    &mut self.login,
-                    self.auth,
-                    false,
-                );
-                winui::text(
-                    &p,
-                    o.x + 289.0,
-                    o.y + 69.0,
-                    crate::i18n::t("Password"),
-                    label,
-                );
-                winui::edit(
-                    ui,
-                    r(o, 342.0, 55.0, 113.0, 23.0),
-                    &mut self.password,
-                    self.auth,
-                    true,
-                );
+                let (login_rect, password_rect) = if mac {
+                    for (row, caption) in [(94.0, login_label), (128.0, password_label)] {
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + 16.0,
+                            o.y + row + 16.0,
+                            caption,
+                            label,
+                            o.x + field_x - 10.0,
+                            ("auth-label", caption),
+                        );
+                    }
+                    (
+                        r(o, field_x, 94.0, 464.0 - field_x, 26.0),
+                        r(o, field_x, 128.0, 464.0 - field_x, 26.0),
+                    )
+                } else {
+                    winui::text(&p, o.x + 84.0, o.y + 69.0, login_label, label);
+                    winui::text(&p, o.x + 289.0, o.y + 69.0, password_label, label);
+                    (
+                        r(o, 116.0, 55.0, 117.0, 23.0),
+                        r(o, 342.0, 55.0, 113.0, 23.0),
+                    )
+                };
+                let login = winui::edit(ui, login_rect, &mut self.login, self.auth, false);
+                winui::name(&login, login_label);
+                let password = winui::edit(ui, password_rect, &mut self.password, self.auth, true);
+                winui::name(&password, password_label);
 
                 let ok = winui::button(
                     ui,
-                    r(o, 475.0, 12.0, 79.0, 19.0),
+                    if mac {
+                        r(o, 385.0, 176.0, 79.0, 24.0)
+                    } else {
+                        r(o, 475.0, 12.0, 79.0, 19.0)
+                    },
                     "OK",
                     ButtonKind::Default,
                     false,
@@ -974,7 +1016,11 @@ impl AddUrl {
                 .clicked();
                 let cancel = winui::button(
                     ui,
-                    r(o, 475.0, 40.0, 79.0, 21.0),
+                    if mac {
+                        r(o, 298.0, 176.0, 79.0, 24.0)
+                    } else {
+                        r(o, 475.0, 40.0, 79.0, 21.0)
+                    },
                     "Cancel",
                     ButtonKind::Normal,
                     false,
@@ -986,25 +1032,39 @@ impl AddUrl {
                     // Ends before the OK / Cancel buttons; whole on hover when cut.
                     // On the group box's top line, over a strip of the dialog's colour (as a
                     // caption sits on its line), not struck through by it.
-                    let w = winui::text_width(&p, e).min(465.0 - 140.0) + 6.0;
-                    winui::fill_l(
-                        &p,
-                        o.x + 137.0,
-                        o.y + 39.0,
-                        o.x + 137.0 + w,
-                        o.y + 52.0,
-                        winui::BG(),
-                    );
-                    winui::fit(
-                        ui,
-                        &p,
-                        o.x + 140.0,
-                        o.y + 49.0,
-                        e,
-                        red,
-                        o.x + 465.0,
-                        "add-url-error",
-                    );
+                    if mac {
+                        winui::error_frame(&p, addr_rc);
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + field_x,
+                            o.y + 57.0,
+                            e,
+                            red,
+                            o.x + 464.0,
+                            "add-url-error",
+                        );
+                    } else {
+                        let w = winui::text_width(&p, e).min(465.0 - 140.0) + 6.0;
+                        winui::fill_l(
+                            &p,
+                            o.x + 137.0,
+                            o.y + 39.0,
+                            o.x + 137.0 + w,
+                            o.y + 52.0,
+                            winui::BG(),
+                        );
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + 140.0,
+                            o.y + 49.0,
+                            e,
+                            red,
+                            o.x + 465.0,
+                            "add-url-error",
+                        );
+                    }
                 }
                 // Escape closes an open drop list first, then the dialog.
                 if cancel || (!list_was_open && winui::escape_pressed(ui)) {
@@ -2752,7 +2812,13 @@ impl SpeedSettings {
                         winui::text(p, x, baseline, s, black);
                     },
                 );
-                winui::number_field(
+                // The sentence's words are painted, not exposed: the box is named as its part
+                // of it reads (#1407).
+                let names = winui::sentence_names(
+                    crate::i18n::t("Maximum download speed for one file {kb} KBytes/sec"),
+                    &["kb"],
+                );
+                let kb = winui::number_field(
                     ui,
                     kb_box[0],
                     &mut self.kb,
@@ -2761,6 +2827,7 @@ impl SpeedSettings {
                     true,
                     winui::LIGHT_BG(),
                 );
+                winui::name(&kb, &names[0]);
                 let note = crate::i18n::t(
                     "Note: Internet servers may break connection when the speed is too limited! Thus it's not\nrecommended to use Speed Limiter to download from servers that do not support\n\"resume\" feature.",
                 );
@@ -3201,6 +3268,7 @@ impl ConfirmDelete {
         let extra = grow_extra(ctx, "confirm-delete");
         // The finished files' line under the box, while it is ticked (#1563).
         let warned = grow_extra(ctx, "confirm-delete-finished");
+        let mac = crate::theme::mac_layout();
         question(
             ctx,
             "confirm-delete",
@@ -3287,30 +3355,53 @@ it from Mister Download Manager list of downloads?",
                 let o = o + vec2(0.0, warn);
                 let yes = winui::button_light(
                     ui,
-                    r(o, 94.0, 86.0, 73.0, 21.0),
-                    "Yes",
-                    ButtonKind::Default,
+                    if mac {
+                        r(o, 280.0, 110.0, 80.0, 24.0)
+                    } else {
+                        r(o, 94.0, 86.0, 73.0, 21.0)
+                    },
+                    if !mac {
+                        "Yes"
+                    } else if self.files {
+                        "Delete"
+                    } else {
+                        "Remove"
+                    },
+                    if mac {
+                        ButtonKind::Normal
+                    } else {
+                        ButtonKind::Default
+                    },
                     false,
                 )
                 .clicked();
                 let no = winui::button_light(
                     ui,
-                    r(o, 207.0, 86.0, 73.0, 21.0),
-                    "No",
-                    ButtonKind::Normal,
+                    if mac {
+                        r(o, 192.0, 110.0, 80.0, 24.0)
+                    } else {
+                        r(o, 207.0, 86.0, 73.0, 21.0)
+                    },
+                    if mac { "Cancel" } else { "No" },
+                    if mac {
+                        ButtonKind::Default
+                    } else {
+                        ButtonKind::Normal
+                    },
                     false,
                 )
                 .clicked();
                 winui::checkbox_light(
                     ui,
-                    o + vec2(24.0, 120.0),
+                    o + vec2(24.0, if mac { 82.0 } else { 120.0 }),
                     &mut self.dont_show,
                     "Don't show this dialog again",
                     true,
                 );
-                if no || winui::escape_pressed(ui) {
+                let enter = winui::enter_pressed(ui);
+                if no || winui::escape_pressed(ui) || (mac && enter && !yes) {
                     Outcome::Closed
-                } else if yes || winui::enter_pressed(ui) {
+                } else if yes || (!mac && enter) {
                     Outcome::Done((self.files, self.dont_show))
                 } else {
                     Outcome::Open
@@ -3343,8 +3434,87 @@ pub fn raise(ctx: &egui::Context, viewport: ViewportId) {
     if !crate::offscreen() {
         #[cfg(target_os = "macos")]
         crate::unix::macos_activate_app();
-        ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+        focus(ctx, viewport);
     }
+}
+
+/// Bring `viewport`'s window to the front with the keyboard: every window of MDM comes forward
+/// through here (a test holds the line), never by egui's `Focus` command. On Windows winit
+/// carries that command out with a made-up Left Alt press and release (`SendInput`, to get past
+/// Windows' foreground lock), and every program listening for Alt across the system heard it:
+/// a push-to-talk key went off when the browser asked MDM for a window (#1645). There the
+/// window comes forward MDM's own way once it shows ([`focus_pending`], each frame), with the
+/// right to the foreground the browser's native host or a second launch passed on, else joined
+/// to the input of the window in front; a refusal even then flashes its taskbar button, as
+/// Windows means a program in the background to ask. Linux and macOS: winit's focus, which sends
+/// no input (X11 `_NET_ACTIVE_WINDOW`, macOS `activateIgnoringOtherApps`, nothing on Wayland).
+/// Off-screen test runs never take the focus (main.rs `offscreen`).
+pub fn focus(ctx: &egui::Context, viewport: ViewportId) {
+    if crate::offscreen() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let until = std::time::Instant::now() + FOCUS_WAIT;
+        ctx.data_mut(|d| {
+            let asked = d.get_temp_mut_or_default::<Vec<(ViewportId, std::time::Instant)>>(
+                egui::Id::unique(FOCUS_ASKED),
+            );
+            if !asked.iter().any(|(v, _)| *v == viewport) {
+                asked.push((viewport, until));
+            }
+        });
+        // The window is looked for in the next frame, once the commands of this one (shown,
+        // restored) are carried out.
+        ctx.request_repaint();
+    }
+    #[cfg(not(windows))]
+    ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+}
+
+/// Where [`focus`] keeps the windows it was asked to bring forward (Windows), each with when to
+/// give up on it.
+#[cfg(windows)]
+const FOCUS_ASKED: &str = "dialogs-focus-asked";
+
+/// How long [`focus`] waits for a window to show (a dialog is shown a frame or two after it is
+/// made, once it has its theme; the main window once it is back from the tray).
+#[cfg(windows)]
+const FOCUS_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The windows [`focus`] was asked for that show now, brought forward; the others asked again
+/// in the next frame until their time is up. Called at every frame (`App::logic`).
+#[cfg(windows)]
+pub fn focus_pending(ctx: &egui::Context) {
+    let key = egui::Id::unique(FOCUS_ASKED);
+    let asked = ctx.data(|d| d.get_temp::<Vec<(ViewportId, std::time::Instant)>>(key));
+    let Some(asked) = asked.filter(|a| !a.is_empty()) else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    let mut left = Vec::new();
+    for (viewport, until) in asked {
+        // The main window by its handle, the others by the title they have now (a progress
+        // window's changes as it goes).
+        let title = if viewport == ViewportId::ROOT {
+            Some(crate::MAIN_TITLE.to_owned())
+        } else {
+            ctx.input(|i| i.raw.viewports.get(&viewport).and_then(|v| v.title.clone()))
+        };
+        let front = title.and_then(|t| crate::win32::bring_own_forward(&t));
+        match front {
+            Some(true) => {}
+            Some(false) => tracing::info!(
+                "a window asked to the front stays behind (Windows refused it): its button flashes"
+            ),
+            None if now < until => left.push((viewport, until)),
+            None => tracing::info!("a window asked to the front didn't show in time"),
+        }
+    }
+    if !left.is_empty() {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|d| d.insert_temp(key, left));
 }
 
 /// A click in the window this pass draws (the main window, a dialog, a progress window; never a
@@ -4577,6 +4747,71 @@ pub fn ensure_replace_asked<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every window comes to the front through `focus` (#1645): egui's `Focus` command, which
+    /// winit carries out on Windows with a made-up Alt key press heard by the whole system, is
+    /// sent from nowhere else in the app's sources.
+    #[test]
+    fn windows_come_forward_only_through_focus() {
+        // Split, so this test's own line isn't one.
+        let command = ["ViewportCommand", "::Focus"].concat();
+        let mut found = Vec::new();
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (n, line) in src.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or_default();
+                    if code.contains(&command) {
+                        found.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        // The one in `focus` itself, for Linux and macOS.
+        assert_eq!(
+            found.len(),
+            1,
+            "Focus sent outside dialogs::focus: {found:?}"
+        );
+        assert!(found[0].contains("dialogs.rs"), "{found:?}");
+    }
+
+    /// Asked to bring a window forward (Windows), `focus` keeps it once, however often it is
+    /// asked before the window shows, and lets it go once its time is up.
+    #[cfg(windows)]
+    #[test]
+    fn focus_keeps_each_window_once_until_its_time_is_up() {
+        let ctx = egui::Context::default();
+        let vid = ViewportId::from_hash_of("focus-test");
+        let asked = |ctx: &egui::Context| {
+            ctx.data(|d| {
+                d.get_temp::<Vec<(ViewportId, std::time::Instant)>>(egui::Id::unique(FOCUS_ASKED))
+            })
+            .unwrap_or_default()
+        };
+        focus(&ctx, vid);
+        focus(&ctx, vid);
+        assert_eq!(asked(&ctx).len(), 1);
+        // No such window: still asked while there is time.
+        focus_pending(&ctx);
+        assert_eq!(asked(&ctx).len(), 1);
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                egui::Id::unique(FOCUS_ASKED),
+                vec![(vid, std::time::Instant::now())],
+            )
+        });
+        focus_pending(&ctx);
+        assert!(asked(&ctx).is_empty());
+    }
 
     /// A dialog that opened over the browser stays on its own for as long as it is open, even
     /// once it is the window in front (its frame applied again at a new size); the next opening

@@ -35,7 +35,9 @@
 // preview the page stopped as the pointer went to it, #503), ytpreview (the same over YouTube's own
 // preview, a click sending the preview's video, not the one its main player watched last, #1271), steady (the video button keeping one place over
 // a preview that grows and shows its own buttons while hovered, #560), player (one place over a
-// player whose settings button comes and goes as the pointer moves, #899), csp (the video button
+// player whose settings button comes and goes as the pointer moves, #899), bilibili (one free
+// corner over Bilibili's player, clear of its feedback button under the button's end, kept as the
+// pointer reaches it and the player hides its bars, #1582), csp (the video button
 // under a strict CSP), hls (the stream a player loaded), streams (HLS and DASH players handed over
 // by the button, the right-click menu and the media list, and read by yt-dlp; #155; also with no
 // .m3u8 or .mpd, served as text/plain or octet-stream, #171), sniffed (#171 without yt-dlp: such
@@ -61,7 +63,8 @@
 // off again, #404), recent (the popup's Downloads tab: MDM's downloads with their icons, states and
 // actions, the toolbar button's count, #1496),
 // remote (Send downloads to → Another MDM, #157: paired from the popup, a link downloaded by a
-// headless MDM; E2E_REMOTE_URL for one running elsewhere, such as the Docker image: remoteServer).
+// headless MDM; E2E_REMOTE_URL for one running elsewhere, such as the Docker image: remoteServer),
+// byhand (the copy loaded here by hand says so in its popup, with its browser's store, #1613).
 //
 // Screenshots for a pull request (Chromium only): E2E_LANG=de (or ar, ...) starts the browser in that
 // language, so the extension shows its _locales text of it; with E2E_SHOTS=<folder> the `qualities`
@@ -610,6 +613,9 @@ async function firefox(bin, profile, dl, page, ready) {
       pref("browser.altClickSave", true),
       // The extension's address, known in advance (its popup opened in a tab).
       pref("extensions.webextensions.uuids", JSON.stringify({ [FIREFOX_ID]: FIREFOX_UUID })),
+      // E2E_COLOR_SCHEME (light or dark): the pages, the extension's popup with them, in those
+      // colours (0 dark, 1 light).
+      ...(process.env.E2E_COLOR_SCHEME ? [pref("layout.css.prefers-color-scheme.content-override", process.env.E2E_COLOR_SCHEME === "dark" ? 0 : 1)] : []),
     ].join("\n"),
   );
   const proc = spawn(bin, ["-headless", "-no-remote", "-profile", profile, "--remote-debugging-port", String(port), "--width=1280", "--height=900"], {
@@ -732,7 +738,16 @@ async function firefox(bin, profile, dl, page, ready) {
           actions: [{ type: "pointer", id: "mouse", actions: [{ type: "pointerMove", x: Math.round(r[0]), y: Math.round(r[1]) }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }],
         });
       };
-      return { evaluate: ev, click, close: () => bidi.send("browsingContext.close", { context: c }).catch(() => {}) };
+      // A picture of its page cut to the body, as Chromium's (the tab brought to the front first).
+      const shot = async (file) => {
+        await inBrowser(`(() => { const t = [...gBrowser.tabs].find((x) => x.linkedBrowser.currentURI.spec === ${JSON.stringify(url)}); if (t) gBrowser.selectedTab = t; return Boolean(t); })()`);
+        await sleep(300);
+        const r = await ev("JSON.parse(JSON.stringify(document.body.getBoundingClientRect()))");
+        const clip = { type: "box", x: Math.max(0, r.left - r.top), y: 0, width: Math.ceil(r.width + 2 * r.top), height: Math.ceil(r.bottom + r.top) };
+        const { data } = await bidi.send("browsingContext.captureScreenshot", { context: c, clip });
+        fs.writeFileSync(file, Buffer.from(data, "base64"));
+      };
+      return { evaluate: ev, click, shot, close: () => bidi.send("browsingContext.close", { context: c }).catch(() => {}) };
     };
     // An expression in the browser's own window (its chrome scope): its preferences, its console,
     // its permission prompts.
@@ -2983,6 +2998,128 @@ thumb.addEventListener("mouseleave", () => { preview.classList.add("off"); docum
     return `took the ${side(b)} corner clear of the player's settings button, then kept it for ${seen.length} looks (to it, on it, back over the video, still, moved, on it again) while the player hid its settings button ${hid} times`;
   },
 
+  // #1582: Bilibili's player, as its video pages have it (built here, nothing from Bilibili). A
+  // top bar over the video holds a feedback button at the top right, 14 px from the edge (under
+  // the end of the button's default spot, between its corners), and a control bar holds buttons
+  // at both bottom corners; both show while the pointer moves over the player and hide a moment
+  // after it stops or as it leaves the player, for the button, which is no part of it. 0.5.2 went
+  // to the free top left, then back to the top right as the pointer reached it and the top bar
+  // hid, and away again when it came back: it dodged the pointer. The button takes the top left
+  // (not over the feedback button) and keeps it as the pointer goes to it, rests on it, goes
+  // back over the video and comes again; a click sends the video.
+  async bilibili(t) {
+    await t.session.navigate(`${LAB}/page?w=800&h=450&video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await t.session.evaluate(`(() => {
+      const v = document.querySelector("#video");
+      const box = document.createElement("div");
+      box.id = "bpx-player";
+      box.style.cssText = "position:relative;display:inline-block;background:#000;line-height:0";
+      v.replaceWith(box);
+      box.appendChild(v);
+      const overlay = (css) => {
+        const d = document.createElement("div");
+        d.style.cssText = "position:absolute;left:0;right:0;pointer-events:none;opacity:0;visibility:hidden;" + css;
+        box.appendChild(d);
+        return d;
+      };
+      const top = overlay("top:0;height:120px;background:linear-gradient(#0008,#0000);z-index:2");
+      const issue = document.createElement("span");
+      issue.id = "player-feedback";
+      issue.textContent = "?";
+      issue.style.cssText = "position:absolute;right:14px;top:18px;width:54px;height:24px;cursor:pointer;pointer-events:all;color:#fff;font:16px/24px sans-serif;text-align:center";
+      top.appendChild(issue);
+      const bar = overlay("bottom:0;height:48px;background:#0009;z-index:2;display:flex;justify-content:space-between;align-items:center");
+      for (const name of ["play", "fullscreen"]) {
+        const b = document.createElement("button");
+        b.id = "player-" + name;
+        b.textContent = name;
+        b.style.cssText = "pointer-events:all;width:200px;height:40px;margin:0 8px";
+        bar.appendChild(b);
+      }
+      let idle = 0;
+      const show = (on) => {
+        for (const d of [top, bar]) {
+          d.style.opacity = on ? "1" : "0";
+          d.style.visibility = on ? "visible" : "hidden";
+        }
+        if (!on) document.body.dataset.hidden = String(Number(document.body.dataset.hidden || 0) + 1);
+      };
+      box.addEventListener("mousemove", () => {
+        show(true);
+        clearTimeout(idle);
+        idle = setTimeout(() => show(false), 1500);
+      });
+      box.addEventListener("mouseleave", () => {
+        clearTimeout(idle);
+        show(false);
+      });
+      return true;
+    })()`);
+    const v = await rect(t.session, "#video");
+    const mid = [(v.l + v.r) / 2, (v.t + v.b) / 2];
+    const seen = [];
+    let covered = 0;
+    const side = (r) => (r ? `${(r.l + r.r) / 2 > mid[0] ? "right" : "left"}-${(r.t + r.b) / 2 > mid[1] ? "bottom" : "top"}` : "gone");
+    const look = async (what) => {
+      const r = await rect(t.session, "mdm-video-button");
+      const f = await t.session.evaluate(`(() => { const e = document.getElementById("player-feedback"); const r = e.getBoundingClientRect();
+        return getComputedStyle(e.parentElement).opacity > 0.5 ? { l: r.left, t: r.top, r: r.right, b: r.bottom } : null; })()`);
+      if (r && f && r.l < f.r && r.r > f.l && r.t < f.b && r.b > f.t) covered += 1;
+      seen.push(`${what} ${side(r)}${r ? ` ${Math.round(r.l)},${Math.round(r.t)}` : ""}`);
+      return r;
+    };
+    const glide = async (from, to, steps, what) => {
+      for (let i = 1; i <= steps; i++) {
+        await t.session.mouse(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+        await sleep(60);
+        await look(`${what} ${i}`);
+      }
+    };
+    const rest = async (ms, what) => {
+      for (let n = 0; n < ms / 100; n++) {
+        await sleep(100);
+        await look(`${what} ${n}`);
+      }
+    };
+    const first = await hover(t.session, v);
+    if (!first) throw new Error("no button over the player");
+    await until("the player's top bar", 5000, () => t.session.evaluate(`getComputedStyle(document.getElementById("player-feedback").parentElement).opacity === "1"`));
+    // The pointer moves on a little over the video (the button fades 1.5 s after it rests, #480),
+    // and the button has had its time (400 ms) to look again at the spot it took.
+    await t.session.mouse(mid[0] + 3, mid[1] + 2);
+    await sleep(600);
+    const b = await look("shown");
+    if (!b) throw new Error("the button went as the player's bars showed");
+    if (covered) throw new Error(`the button covers the player's feedback button: ${seen.join("; ")}`);
+    if (side(b) !== "left-top") throw new Error(`the button took the ${side(b)} corner (the top left is the free one)`);
+    // To the button (out of the player): the player hides its bars. Resting on it, back over the
+    // video (the bars show again), still, and to it again.
+    const on = [b.l + 14, (b.t + b.b) / 2];
+    await glide(mid, on, 10, "to it");
+    await rest(2000, "on it");
+    await glide(on, mid, 8, "back");
+    await rest(1000, "over the video");
+    await t.session.mouse(mid[0] + 20, mid[1] + 10);
+    await rest(500, "moved");
+    await glide([mid[0] + 20, mid[1] + 10], on, 10, "again");
+    await rest(1500, "on it again");
+    const hid = await t.session.evaluate("Number(document.body.dataset.hidden || 0)");
+    if (hid < 2) throw new Error(`the player hid its bars ${hid} time(s): the test's player didn't behave as Bilibili's`);
+    // Gone a moment is fine: it fades while the pointer rests still over the video (#480).
+    const away = seen.filter((x) => !x.includes(side(b)) && !x.includes(" gone"));
+    if (away.length || covered) throw new Error(`the button moved or covered the feedback button (${covered}): ${seen.join("; ")}`);
+    const landed = await rect(t.session, "mdm-video-button");
+    if (!landed) throw new Error("no button under the pointer at the end");
+    near(landed.l, b.l, "kept, left edge");
+    near(landed.t, b.t, "kept, top");
+    // E2E_BILIBILI_SHOT: a picture of the page with the pointer on the button, for a PR's body.
+    if (process.env.E2E_BILIBILI_SHOT && t.session.screenshot) await t.session.screenshot(process.env.E2E_BILIBILI_SHOT);
+    const address = await clickButton(t.session, landed);
+    if (address !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`the video window got ${address}`);
+    await t.session.mouse(5, 5);
+    return `took the top left, clear of the player's feedback button, and kept it for ${seen.length} looks (to it, on it, back over the video, moved, on it again) while the player hid its bars ${hid} times; sent ${address.replace(LAB, "")}`;
+  },
+
   // A player playing a stream (a blob: in the page): the button sends the manifest it loaded.
   async hls(t) {
     await t.session.navigate(`${LAB}/page?hls=1`);
@@ -3259,6 +3396,64 @@ thumb.addEventListener("mouseleave", () => { preview.classList.add("off"); docum
       await popup.close();
       // Never left listed for the next case.
       if (listed()) await ipc({ include_site: site }).catch(() => {});
+    }
+  },
+
+  // #1613: the extension is loaded by hand here (Load unpacked in Chromium, a temporary add-on in
+  // Firefox), so its popup says it won't update itself, with a link to its browser's store:
+  // management.getSelf() answers "development", with no "management" permission.
+  // E2E_SHOTS: <browser>-<lang>-<scheme>-by-hand.png, the popup as it opens. E2E_BYHAND_BEFORE=1:
+  // only that picture (an older popup in the packed extension), for the "before" pictures.
+  async byhand(t) {
+    if (!t.session.tab || !t.session.base) throw new Skip("the popup in a tab of its own");
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const lang = process.env.E2E_LANG || "en";
+    const tag = `${t.name}-${lang}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    const picture = async (p, name) => {
+      if (!shots || !p.shot) return;
+      fs.mkdirSync(shots, { recursive: true });
+      await sleep(350);
+      await p.shot(path.join(shots, `${tag}-${name}.png`));
+    };
+    if (process.env.E2E_BYHAND_BEFORE === "1") {
+      const p = await t.session.tab(`${t.session.base}popup.html`);
+      try {
+        if (p.viewport) await p.viewport(400, 548);
+        await until("the popup", 10000, () => p.evaluate(`document.readyState === "complete" && Boolean(document.getElementById("status-text").textContent)`).catch(() => false));
+        await picture(p, "by-hand-before");
+        return "the popup as packed, pictured";
+      } finally {
+        await p.close();
+      }
+    }
+    const firefox = t.kind === "firefox";
+    const en = JSON.parse(fs.readFileSync(path.join(root, "extension", "_locales", "en", "messages.json"), "utf8"));
+    const want = firefox
+      ? { text: en.popup_by_hand_firefox.message, link: en.popup_store_firefox.message, href: "https://addons.mozilla.org/firefox/addon/mister-download-manager/" }
+      : { text: en.popup_by_hand.message, link: en.popup_store_chrome.message, href: "https://chromewebstore.google.com/detail/mister-download-manager/ejoleppdfgjdndddcjoehopknmlglojp" };
+    const p = await t.session.tab(`${t.session.base}popup.html`);
+    try {
+      if (p.viewport) await p.viewport(400, 548);
+      const read = `(async () => {
+        const self = await (globalThis.browser ?? chrome).management.getSelf();
+        const bar = document.getElementById("by-hand");
+        const link = document.getElementById("by-hand-store");
+        return JSON.stringify({ installType: self.installType, shown: Boolean(bar && !bar.hidden && bar.offsetHeight > 0), text: document.getElementById("by-hand-text").textContent, link: link.textContent, href: link.href });
+      })()`;
+      const got = JSON.parse(
+        await until("the popup's line for a copy loaded by hand", 10000, async () => {
+          const v = await p.evaluate(read).catch(() => "");
+          return v && JSON.parse(v).shown ? v : "";
+        }),
+      );
+      if (got.installType !== "development") throw new Error(`management.getSelf() says ${got.installType}, not development`);
+      if (got.href !== want.href) throw new Error(`the store link is ${got.href}, not ${want.href}`);
+      if (lang === "en" && (got.text !== want.text || got.link !== want.link)) throw new Error(`the line says ${JSON.stringify([got.text, got.link])}`);
+      if (!got.text || !got.link || /^popup_/.test(got.text) || /^popup_/.test(got.link)) throw new Error(`no text: ${JSON.stringify(got)}`);
+      await picture(p, "by-hand");
+      return `installType ${got.installType}: "${got.text} ${got.link}" -> ${got.href}`;
+    } finally {
+      await p.close();
     }
   },
 

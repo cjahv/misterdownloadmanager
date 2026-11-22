@@ -254,10 +254,13 @@ pub fn banner(
     let bold = tahoma_title();
     let shown = ellipsize(p, &bold, headline, w - 18.0 - 80.0);
     let drawn = text_font(p, bold, o.x + 80.0, o.y + 36.0, &shown, TEXT());
+    // The banner's words reach a screen reader too: they were only painted before (#1407).
+    readable(ui, drawn, (key, "headline"), headline);
     if shown != headline {
         full_on_hover(ui, drawn, (key, "headline"), headline);
     }
-    let lines = paragraph(
+    let lines = readable_paragraph(
+        ui,
         p,
         o.x + 80.0,
         o.y + 57.0,
@@ -265,6 +268,7 @@ pub fn banner(
         MUTED(),
         o.x + w - 18.0,
         14.0,
+        (key, "subline"),
     );
     // As planned, two lines: the second one's baseline at 71, then 13 px of descent and margin.
     let need = 57.0 + 14.0 * (lines.max(2) as f32 - 1.0) + 13.0;
@@ -300,7 +304,7 @@ fn caption_key(ctx: &egui::Context) -> egui::Id {
 
 fn note_caption(p: &Painter, s: &str, drawn: Rect) {
     let s = s.trim();
-    if s.is_empty() || s.chars().count() > 80 {
+    if s.is_empty() || s.chars().count() > 140 {
         return;
     }
     let ctx = p.ctx();
@@ -1070,6 +1074,89 @@ pub fn sentence_pieces<'a>(template: &'a str, slots: &[&str]) -> Vec<Vec<Piece<'
             out
         })
         .collect()
+}
+
+/// Each input box's name for screen readers (#1407): the words around it in the translated
+/// sentence, in the sentence's own order — "Download {files} files at the same time" names
+/// its box "Download files at the same time", so a reader says what a box's number is,
+/// whatever language the sentence is translated into (a box first on its line is named by the
+/// words after it, as the Japanese catalog runs it). A sentence holds one box on a line
+/// today; where a line had two, the words between them would join both their names. A box
+/// with no words around it takes the sentence's own words, its placeholders dropped: a
+/// slot's id is code, not a language. Any leftover `{...}` (a placeholder the caller didn't
+/// name a slot) and the `&` of a keyboard letter drop out of a name, as they do out of a
+/// caption ([`caption_for`]).
+pub fn sentence_names(template: &str, slots: &[&str]) -> Vec<String> {
+    let rows = sentence_pieces(template, slots);
+    // The sentence's own words, placeholders dropped: a box alone in a translation still
+    // reads in its language.
+    let sentence = rows
+        .iter()
+        .flatten()
+        .filter_map(|p| match *p {
+            Piece::Text(s) => {
+                let words = name_words(s);
+                (!words.is_empty()).then_some(words)
+            }
+            Piece::Slot(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    slots
+        .iter()
+        .map(|slot| {
+            for row in &rows {
+                // The words before the box, then the ones after it, up to another box.
+                let mut before: Vec<String> = Vec::new();
+                let mut after: Vec<String> = Vec::new();
+                let (mut seen, mut past) = (false, false);
+                for piece in row.iter().copied() {
+                    match piece {
+                        Piece::Text(s) if !past => {
+                            let words = name_words(s);
+                            if !words.is_empty() {
+                                if seen {
+                                    after.push(words);
+                                } else {
+                                    before.push(words);
+                                }
+                            }
+                        }
+                        Piece::Slot(s) if s == *slot => seen = true,
+                        Piece::Slot(_) if seen => past = true,
+                        Piece::Slot(_) => before.clear(),
+                        _ => {}
+                    }
+                }
+                if seen {
+                    before.extend(after);
+                    if !before.is_empty() {
+                        return before.join(" ");
+                    }
+                    break;
+                }
+            }
+            sentence.clone()
+        })
+        .collect()
+}
+
+/// A text piece as part of a name: any leftover `{...}` (a placeholder the caller didn't
+/// name a slot) and the `&` of a keyboard letter drop out, and with them the spaces they
+/// leave behind.
+fn name_words(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut brace = false;
+    for c in s.chars() {
+        match c {
+            '{' => brace = true,
+            '}' => brace = false,
+            '&' => {}
+            _ if !brace => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Where [`sentence`] puts things: (x, baseline, text) for each text piece, and each slot's
@@ -2009,6 +2096,9 @@ pub fn field_frame(p: &Painter, rc: Rect, look: FieldLook) {
         Stroke::new(crate::theme::metrics().border, border),
         StrokeKind::Inside,
     );
+    if crate::theme::mac_layout() {
+        return;
+    }
     hline(
         p,
         rc.left() + radius,
@@ -2193,6 +2283,15 @@ pub fn edit_focus_line(ui: &Ui, resp: &Response, rc: Rect) {
 /// The 2 px accent along a focused box's bottom edge. Light: the bottom of its rounded
 /// frame, curving into the corners as Windows 11 draws it; dark: IDM's straight line.
 pub fn focus_bottom(p: &Painter, rc: Rect) {
+    if crate::theme::mac_layout() {
+        p.rect_stroke(
+            rc.expand(1.5),
+            control_radius() + 1.5,
+            Stroke::new(2.5, accent()),
+            StrokeKind::Inside,
+        );
+        return;
+    }
     let h = crate::theme::metrics().focus_line;
     // GNOME: a ring inside the box, the accent half seen through.
     if crate::theme::current().controls.field_focus == crate::palette::FieldFocus::Ring {
@@ -2967,7 +3066,12 @@ fn combo_chevron(p: &Painter, rc: Rect) {
     } else {
         rc.right() - 1.0 - 19.0
     };
-    let (cx, cy) = (arrow_left + 6.0, rc.top() + 8.0);
+    let cy = if crate::theme::mac_layout() {
+        rc.center().y - 2.0
+    } else {
+        rc.top() + 8.0
+    };
+    let (cx, cy) = (arrow_left + 6.0, cy);
     p.line(
         vec![
             pos2(cx, cy + 0.5),
@@ -2979,6 +3083,26 @@ fn combo_chevron(p: &Painter, rc: Rect) {
             crate::theme::colors().combo_chevron,
         ),
     );
+}
+
+/// A fixed-choice Mac pop-up shows paired chevrons; an editable combo has one.
+fn choice_chevron(p: &Painter, rc: Rect, enabled: bool) {
+    let center = combo_zone(rc).center();
+    let ink = if enabled {
+        LIGHT_TEXT()
+    } else {
+        LIGHT_DISABLED()
+    };
+    for sign in [-1.0, 1.0] {
+        p.line(
+            vec![
+                center + vec2(-3.0, sign),
+                center + vec2(0.0, 4.0 * sign),
+                center + vec2(3.0, sign),
+            ],
+            Stroke::new(1.3, ink),
+        );
+    }
 }
 
 /// Combo frame. Dark: 1 px border (#8d8d8d, or #0078d4 when focused), 2 px white ring, dark
@@ -3000,7 +3124,11 @@ pub fn combo(ui: &mut Ui, rc: Rect, value: &str, id: &str) -> Response {
     // A drop-down list is drawn as Windows 11 draws them (and as combo_light does): a button's
     // face, its state across the whole of it, focus shown as a button's.
     dropdown_frame_light(ui.painter(), rc, State::of(&resp, true));
-    combo_chevron(ui.painter(), rc);
+    if crate::theme::mac_layout() {
+        choice_chevron(ui.painter(), rc, true);
+    } else {
+        combo_chevron(ui.painter(), rc);
+    }
     show_focus(ui, &resp, rc.shrink(2.0));
     // Short of the arrow zone: a longer value ends in "..." and shows whole on hover.
     let shown = ellipsize(ui.painter(), &tahoma(), value, rc.width() - 5.0 - 22.0);
@@ -3055,6 +3183,21 @@ pub fn combo_arrow(ui: &mut Ui, rc: Rect, id: &str, open: bool) -> Response {
     let resp = opener_click(ui, resp);
     let state = State::of(&resp, true).open_if(open);
     let c = crate::theme::colors();
+    if crate::theme::mac_layout() {
+        let ink = if open { c.subtle_pressed } else { c.subtle_hot };
+        if state != State::Normal {
+            ui.painter().rect_filled(zone.shrink(2.0), 4.0, ink);
+            combo_chevron(ui.painter(), rc);
+        }
+        expose(
+            &resp,
+            egui::Role::Button,
+            crate::i18n::t("Show history"),
+            true,
+            None,
+        );
+        return resp;
+    }
     let tint = match state {
         State::Hot => Some(c.combo_arrow_hot),
         State::Pressed | State::Open => Some(c.combo_arrow_pressed),
@@ -3120,11 +3263,10 @@ pub fn drop_list(
     empty: &str,
     open: &mut bool,
 ) -> Option<usize> {
-    use crate::chrome::{MenuEntry, PopupResult, label};
     // A menu label: long addresses shortened in the middle, "&" kept as text (not an access key).
     let shown = |t: &str| {
         let n = t.chars().count();
-        let short: String = if n > 72 {
+        if n > 72 {
             t.chars()
                 .take(36)
                 .chain(std::iter::once('\u{2026}'))
@@ -3132,9 +3274,24 @@ pub fn drop_list(
                 .collect()
         } else {
             t.to_owned()
-        };
-        label(&short.replace('&', "&&"))
+        }
     };
+    #[cfg(target_os = "macos")]
+    if crate::theme::mac_layout() && !crate::offscreen() {
+        return crate::unix::macos_choices::choose(
+            ui.ctx(),
+            widget_id(ui, ("history", id)),
+            anchor,
+            items
+                .iter()
+                .take(crate::settings::HISTORY)
+                .map(|s| shown(s)),
+            None,
+            empty,
+            open,
+        );
+    }
+    use crate::chrome::{MenuEntry, PopupResult, label};
     let entries: Vec<MenuEntry<usize>> = if items.is_empty() {
         vec![MenuEntry::Item(label(empty), usize::MAX, false, false)]
     } else {
@@ -3142,7 +3299,7 @@ pub fn drop_list(
             .iter()
             .take(crate::settings::HISTORY)
             .enumerate()
-            .map(|(i, t)| MenuEntry::Item(shown(t), i, true, false))
+            .map(|(i, t)| MenuEntry::Item(label(&shown(t).replace('&', "&&")), i, true, false))
             .collect()
     };
     // Under the box's leading edge (its right one in a right-to-left interface, where menus
@@ -3597,6 +3754,9 @@ pub fn group_box(p: &Painter, rc: Rect, gap: Option<(f32, f32)>) {
         }
         None => hline(p, l, rr, t, GROUP_LINE()),
     }
+    if crate::theme::mac_layout() {
+        return;
+    }
     vline(p, l, t, b, GROUP_LINE());
     vline(p, rr, t, b, GROUP_LINE());
     hline(p, l, rr, b, GROUP_LINE());
@@ -4030,6 +4190,14 @@ fn button_face(
     } else {
         Sense::hover()
     };
+    let mac = crate::theme::mac_layout();
+    let caption;
+    let label = if mac {
+        caption = crate::chrome::mac_caption(label);
+        caption.as_str()
+    } else {
+        label
+    };
     // Keyed by its place, not its label: Pause becoming Resume keeps the focus.
     let resp = ui.interact(
         rc,
@@ -4052,10 +4220,15 @@ fn button_face(
     }
     let state = State::of(&resp, enabled);
     let p = ui.painter();
+    let kind = if mac && kind == ButtonKind::Default {
+        ButtonKind::Accent
+    } else {
+        kind
+    };
     let face = button_colors(kind, state, crate::theme::colors());
     let radius = paint_button(p, rc, kind, state, &face, Shape::Push);
     // "&Start now": the letter after '&' is underlined and Alt+letter presses it.
-    let (shown, mnemonic) = match label.split_once('&') {
+    let (shown, mnemonic) = match label.split_once('&').filter(|_| !mac) {
         Some((before, after)) if !after.is_empty() => (format!("{before}{after}"), Some(before)),
         _ => (label.to_owned(), None),
     };
@@ -4097,7 +4270,11 @@ fn button_face(
         resp
     };
     if resp.has_focus() || (default_focus && ui.ctx().memory(|m| m.focused().is_none())) {
-        focus_ring_round(ui.painter(), rc.shrink(2.0), (radius - 2.0).max(0.0));
+        if mac {
+            focus_ring_round(ui.painter(), rc.expand(2.0), radius + 2.0);
+        } else {
+            focus_ring_round(ui.painter(), rc.shrink(2.0), (radius - 2.0).max(0.0));
+        }
     }
     if cut {
         resp.on_hover_text(label.replace('&', ""))
@@ -4121,6 +4298,17 @@ fn paint_button(
     let c = crate::theme::colors();
     let m = crate::theme::metrics();
     let look = crate::theme::current().controls.button;
+    if crate::theme::mac_layout() && matches!(shape, Shape::Push | Shape::DropDown) {
+        let radius = 6.0_f32.min(rc.height() / 2.0);
+        p.rect_filled(rc, radius, face.fill);
+        p.rect_stroke(
+            rc,
+            radius,
+            Stroke::new(1.0, face.border),
+            StrokeKind::Inside,
+        );
+        return radius;
+    }
     let part = shape != Shape::Push;
     let radius = match look {
         _ if shape == Shape::DropDown => control_radius(),
@@ -4451,6 +4639,15 @@ pub fn focus_ring_round(p: &Painter, rc: Rect, radius: f32) {
         return;
     }
     let ink = crate::theme::colors().focus_ring;
+    if crate::theme::mac_layout() {
+        p.rect_stroke(
+            rc,
+            radius,
+            Stroke::new(2.0, crate::theme::colors().button_accent),
+            StrokeKind::Inside,
+        );
+        return;
+    }
     // GNOME: a rounded ring, as wide as two points, the controls' corners.
     match crate::theme::current().controls.focus {
         crate::palette::FocusLook::Ring => {
@@ -4540,8 +4737,9 @@ pub fn checkbox_light_until(
     } else {
         LIGHT_DISABLED()
     };
-    text(&p, english.x + 16.0, glyph.y + 10.0, &shown, color);
+    let drawn = text(&p, english.x + 16.0, glyph.y + 10.0, &shown, color);
     if cut {
+        note_caption(&p, caption, drawn);
         resp.on_hover_text(caption)
     } else {
         resp
@@ -4705,6 +4903,32 @@ fn era_check(p: &Painter, rc: Rect, on: bool, state: State, round: bool) -> bool
 }
 
 pub fn check_box_glyph(p: &Painter, rc: Rect, checked: bool, state: State) {
+    if crate::theme::mac_layout() {
+        let c = crate::theme::colors();
+        let kind = if state == State::Disabled {
+            ButtonKind::Disabled
+        } else if checked {
+            ButtonKind::Accent
+        } else {
+            ButtonKind::Normal
+        };
+        let face = button_colors(kind, state, c);
+        p.rect_filled(rc, 3.5, face.fill);
+        p.rect_stroke(
+            rc,
+            3.5,
+            Stroke::new(1.0, if checked { face.border } else { c.list_frame }),
+            StrokeKind::Inside,
+        );
+        if checked {
+            let at = |x, y| rc.min + vec2(rc.width() * x, rc.height() * y);
+            p.line(
+                vec![at(0.20, 0.51), at(0.42, 0.73), at(0.81, 0.26)],
+                Stroke::new(1.8, face.text),
+            );
+        }
+        return;
+    }
     if era_check(p, rc, checked, state, false) {
         return;
     }
@@ -5033,8 +5257,9 @@ pub fn radio_light_until(
     } else {
         LIGHT_DISABLED()
     };
-    text(&p, english.x + 16.0, glyph.y + 10.0, &shown, color);
+    let drawn = text(&p, english.x + 16.0, glyph.y + 10.0, &shown, color);
     if cut {
+        note_caption(&p, caption, drawn);
         resp.on_hover_text(caption)
     } else {
         resp
@@ -5079,6 +5304,30 @@ pub fn readable(ui: &Ui, rc: Rect, salt: impl std::hash::Hash + std::fmt::Debug,
     let resp = ui.interact(rc, widget_id(ui, ("readable", salt)), Sense::hover());
     let text = text.to_owned();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+}
+
+/// A [`paragraph`] a screen reader can read too: its lines painted, then a [`readable`] Label
+/// node over them, for text that was only painted (#1407). Returns the line count, like
+/// [`paragraph`].
+#[allow(clippy::too_many_arguments)]
+pub fn readable_paragraph(
+    ui: &Ui,
+    p: &Painter,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    color: Color32,
+    right: f32,
+    line_h: f32,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+) -> usize {
+    let lines = paragraph(p, x, baseline, s, color, right, line_h);
+    let rc = rect(Rect::from_min_max(
+        pos2(x, baseline - 12.0),
+        pos2(right, baseline + line_h * (lines as f32 - 1.0) + 4.0),
+    ));
+    readable(ui, rc, salt, s);
+    lines
 }
 
 pub fn expose(resp: &Response, role: egui::Role, label: &str, enabled: bool, on: Option<bool>) {
@@ -5580,8 +5829,12 @@ pub fn tab_keys(ui: &Ui, n: usize, current: usize) -> Option<usize> {
         return None;
     }
     let (next, prev) = ui.input_mut(|i| {
-        let ctrl = egui::Modifiers::COMMAND;
-        let ctrl_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let ctrl = if crate::theme::mac_layout() {
+            egui::Modifiers::CTRL
+        } else {
+            egui::Modifiers::COMMAND
+        };
+        let ctrl_shift = ctrl | egui::Modifiers::SHIFT;
         (
             i.consume_key(ctrl, egui::Key::Tab) || i.consume_key(ctrl, egui::Key::PageDown),
             i.consume_key(ctrl_shift, egui::Key::Tab) || i.consume_key(ctrl, egui::Key::PageUp),
@@ -5619,6 +5872,10 @@ pub fn radio_keys(ui: &Ui, group: &[Response]) -> Option<usize> {
 /// white line 1 px longer so it covers the far end.
 pub fn etched_h(p: &Painter, x: f32, y: f32, w: f32) {
     let x = rect(Rect::from_min_size(pos2(x, y), vec2(w, 2.0))).left();
+    if crate::theme::mac_layout() {
+        hline(p, x, x + w - 1.0, y, HEADER_LINE());
+        return;
+    }
     hline(p, x, x + w - 2.0, y, ETCH_SHADOW());
     px(p, x + w - 1.0, y, ETCH_LIGHT());
     hline(p, x, x + w - 1.0, y + 1.0, ETCH_LIGHT());
@@ -5627,6 +5884,10 @@ pub fn etched_h(p: &Painter, x: f32, y: f32, w: f32) {
 /// Etched vertical separator in English rect `x, y, 2 × h`.
 pub fn etched_v(p: &Painter, x: f32, y: f32, h: f32) {
     let x = rect(Rect::from_min_size(pos2(x, y), vec2(2.0, h))).left();
+    if crate::theme::mac_layout() {
+        vline(p, x, y, y + h - 1.0, HEADER_LINE());
+        return;
+    }
     vline(p, x, y, y + h - 2.0, ETCH_SHADOW());
     px(p, x, y + h - 1.0, ETCH_LIGHT());
     vline(p, x + 1.0, y, y + h - 1.0, ETCH_LIGHT());
@@ -5774,13 +6035,16 @@ pub fn tabs_light(
         rc.right() - 3.0,
         rc.bottom() - 2.0,
     );
-    fill(&p, l, t, rr, b, LIGHT_PAGE());
-    hline(&p, l, rr, t, border);
-    hline(&p, l, rr, b, border);
-    vline(&p, l, t, b, border);
-    vline(&p, rr, t, b, border);
-    fill(&p, rr + 1.0, t, rr + 2.0, b + 1.0, shadow);
-    hline(&p, l, rr + 2.0, b + 1.0, shadow);
+    let mac = crate::theme::mac_layout();
+    if !mac {
+        fill(&p, l, t, rr, b, LIGHT_PAGE());
+        hline(&p, l, rr, t, border);
+        hline(&p, l, rr, b, border);
+        vline(&p, l, t, b, border);
+        vline(&p, rr, t, b, border);
+        fill(&p, rr + 1.0, t, rr + 2.0, b + 1.0, shadow);
+        hline(&p, l, rr + 2.0, b + 1.0, shadow);
+    }
     // (selected range, unselected range, label x, label shown), from the client origin.
     type Placed = ((f32, f32), (f32, f32), f32, String);
     let placed: Vec<Placed> = if tabs.iter().all(|t| crate::i18n::t(t.label) == t.label) {
@@ -5801,13 +6065,20 @@ pub fn tabs_light(
             .collect()
     };
     let mut clicked = None;
+    if mac && let (Some(first), Some(last)) = (placed.first(), placed.last()) {
+        let track = Rect::from_two_pos(
+            pos2(mcol(o.x + first.1.0), rc.top()),
+            pos2(mcol(o.x + last.1.1), t),
+        );
+        p.rect_filled(track, 6.0, shadow);
+    }
     let mut draw = |i: usize, tab: &LightTab, sel: bool| {
         let (sel_x, unsel_x, label_x, shown) = &placed[i];
-        let (x0, x1) = if sel { *sel_x } else { *unsel_x };
+        let (x0, x1) = if sel && !mac { *sel_x } else { *unsel_x };
         // English pixel columns; the tabs run from the leading edge.
         let (a, b) = (mcol(o.x + x0), mcol(o.x + x1));
         let (x0, x1) = (a.min(b), a.max(b));
-        let y0 = if sel { rc.top() } else { rc.top() + 2.0 };
+        let y0 = if mac || sel { rc.top() } else { rc.top() + 2.0 };
         let hit = Rect::from_min_max(pos2(x0, y0), pos2(x1 + 1.0, t));
         // Keyed by the control's place and the tab's index: its x changes when it is chosen,
         // and the focus must stay on it.
@@ -5826,6 +6097,9 @@ pub fn tabs_light(
         );
         let resp = enter_is_not_a_click(ui, resp);
         if resp.clicked() && !sel {
+            if mac {
+                resp.request_focus();
+            }
             clicked = Some(i);
         }
         if sel {
@@ -5850,6 +6124,27 @@ pub fn tabs_light(
                     ui.memory_mut(|m| m.request_focus(next));
                 }
             }
+        }
+        if mac {
+            if sel || resp.hovered() {
+                p.rect_filled(
+                    hit.shrink(1.0),
+                    4.0,
+                    if sel {
+                        crate::theme::colors().button
+                    } else {
+                        TAB_HOT()
+                    },
+                );
+            }
+            let x = hit.center().x - text_width(&p, shown) / 2.0;
+            let drawn = text_at(&p, tahoma(), x, rc.top() + 14.0, shown, LIGHT_TEXT());
+            show_focus(ui, &resp, hit);
+            let full = crate::i18n::t(tab.label);
+            if shown != full {
+                full_on_hover(ui, drawn, ("tab-light-label", i), full);
+            }
+            return;
         }
         let face = if sel {
             LIGHT_PAGE()
@@ -6046,9 +6341,31 @@ pub fn combo_light(
     } else {
         rc.right() - 13.0
     };
-    chevron_light(&p, pos2(chevron_x, rc.top() + 8.0), enabled);
+    if crate::theme::mac_layout() {
+        choice_chevron(&p, rc, enabled);
+    } else {
+        chevron_light(&p, pos2(chevron_x, rc.top() + 8.0), enabled);
+    }
+
     // Over the face (drawn before it, the face hid it).
     show_focus(ui, &resp, rc.shrink(3.0));
+    #[cfg(target_os = "macos")]
+    if open && crate::theme::mac_layout() && !crate::offscreen() {
+        let result = crate::unix::macos_choices::choose(
+            ui.ctx(),
+            key,
+            rc,
+            items.iter().map(|s| crate::i18n::t(s)),
+            Some(selected),
+            "",
+            &mut open,
+        );
+        ui.data_mut(|d| d.insert_temp(key, open));
+        if !open {
+            resp.request_focus();
+        }
+        return result.filter(|i| *i < items.len() && *i != selected);
+    }
     if open {
         // The list: the shared popup (a window of its own, never clipped by the dialog, kept on
         // the screen; the keys, the pointer), the choice marked.
@@ -6288,6 +6605,54 @@ pub fn to_tray_button(ui: &mut Ui, rc: Rect, id: &str, tip: &str) -> Response {
     resp
 }
 
+/// The flat icon button with a × drawn in the text ink: closes a borderless window of ours that
+/// has no title bar (the tray icon's panel, #1365). `tip` is English, translated here.
+pub fn close_button(ui: &mut Ui, rc: Rect, id: &str, tip: &str) -> Response {
+    if crate::theme::mac_layout() {
+        let resp = ui.interact(rc, widget_id(ui, ("close", id)), Sense::click());
+        let state = State::of(&resp, true);
+        let c = crate::theme::colors();
+        let size = rc.width().min(rc.height());
+        let radius = (size * 0.38).min(9.0);
+        let center = rc.center();
+        let fill = match state {
+            State::Pressed => c.subtle_pressed,
+            State::Hot => c.subtle_hot,
+            _ => Color32::TRANSPARENT,
+        };
+        ui.painter().circle_filled(center, radius, fill);
+        let arm = radius * 0.43;
+        let stroke = Stroke::new(
+            1.5,
+            if state == State::Normal {
+                MUTED()
+            } else {
+                LIGHT_TEXT()
+            },
+        );
+        for slope in [-1.0, 1.0] {
+            let offset = vec2(arm, arm * slope);
+            ui.painter()
+                .line_segment([center - offset, center + offset], stroke);
+        }
+        expose(&resp, egui::Role::Button, crate::i18n::t(tip), true, None);
+        show_focus(ui, &resp, rc);
+        return resp.on_hover_text(crate::i18n::t(tip));
+    }
+    let resp = icon_button_light(ui, rc, id, true, tip);
+    let c = rc.center().round();
+    let ink = Stroke::new(1.0, LIGHT_TEXT());
+    // Close's cross, 8 px across, its strokes through pixel centres.
+    let (a, b) = (
+        c + vec2(-4.0, -4.0) + vec2(0.5, 0.5),
+        c + vec2(4.0, 4.0) + vec2(0.5, 0.5),
+    );
+    ui.painter().line_segment([a, b], ink);
+    ui.painter()
+        .line_segment([pos2(a.x, b.y), pos2(b.x, a.y)], ink);
+    resp
+}
+
 /// Our "minimize it away to the notification area" glyph (#63; our own drawing): Minimize's dash
 /// at its height, shortened to 6 of its 10 px on the start side, and from its end a 45° arrow
 /// (shaft about 5.7 px, open head) down towards the screen's corner where the tray is. No
@@ -6471,11 +6836,42 @@ pub mod caption {
 
     /// An era's bar, shaded from its top: XP's light edge on a deep colour, Windows 7's glassy
     /// halves, Mac OS X's light grey falling to the bar's colour.
-    fn bar_stops(era: Shine, bar: Color32, g: Color32) -> Vec<(f32, Color32)> {
-        use crate::derive::{mix, shade};
+    fn bar_stops(era: Shine, bar: Color32, g: Color32, active: bool) -> Vec<(f32, Color32)> {
+        use crate::derive::{mix, shade, shade_chroma};
         match era {
+            // Windows XP's active bar, row by row (#1612; measured from XP's own screens, in
+            // the bar's 32 rows at 100 %): a light band under the window's top edge, falling
+            // back to the bar's colour by the seventh row, then lighter and more vivid again
+            // toward the bottom and a dark bottom edge. Each row's colour comes from the bar's
+            // own (on Luna's #0054e3: band #3d95ff, lighter to #0069ff, bottom #0041ce), so dark
+            // Luna's bar is shaded the same way. XP's top row, a rim of about the bar's colour,
+            // is the window's edge: Windows 11 draws its own one-pixel border over that row of
+            // a dialog, and the main window's sizing strip above its bar takes the bar's first
+            // colour, so the band is first, as XP's light top edge.
+            Shine::Luna if active => {
+                let top = |row: f32| (row + 0.5) / CAPTION_H;
+                let end = |row: f32| 1.0 - (row + 0.5) / CAPTION_H;
+                let v = |dl: f32, k: f32| shade_chroma(bar, dl, k);
+                vec![
+                    (top(1.0), v(0.204, 1.11)),
+                    (top(2.0), v(0.204, 1.24)),
+                    (top(3.0), v(0.12, 1.23)),
+                    (top(4.0), v(0.031, 1.04)),
+                    (top(5.0), v(0.014, 1.02)),
+                    (top(7.0), bar),
+                    (end(18.0), bar),
+                    (end(12.0), v(0.017, 1.04)),
+                    (end(8.0), v(0.041, 1.07)),
+                    (end(6.0), v(0.084, 1.17)),
+                    (end(4.0), v(0.084, 1.17)),
+                    (end(3.0), v(0.069, 1.14)),
+                    (end(2.0), v(0.043, 1.08)),
+                    (end(1.0), v(-0.015, 1.04)),
+                    (end(0.0), v(-0.057, 0.99)),
+                ]
+            }
             // A bright rim along the top, the bar's colour, lighter again toward the bottom,
-            // then a dark bottom edge.
+            // then a dark bottom edge (the inactive bar, as #1628 set it).
             Shine::Luna => vec![
                 (0.0, shade(bar, 0.1)),
                 (0.06, shade(bar, 0.13)),
@@ -6605,6 +7001,75 @@ pub mod caption {
                 CaptionButton::ToTray => to_tray_glyph_sized(p, c, s, rtl(), size),
             }
         }
+
+        /// Windows XP's own glyph (Luna, #1612) on a 21-pixel tile whose edge's top-left pixel
+        /// is `at`, as XP's pixels sit on it: Minimize a short thick bar low and to the left,
+        /// Maximize a box with a thick top, Restore two of them, Close a thick X; all whole
+        /// pixels, so crisp (rounded to the screen's at other scales). False for our own button,
+        /// which keeps [`Self::glyph`].
+        fn xp_glyph(self, ui: &Ui, p: &Painter, at: Pos2, ink: Color32, maximized: bool) -> bool {
+            use egui::emath::GuiRounding;
+            // (left, top, right, bottom) in the tile's pixels, right and bottom excluded.
+            type Spans = &'static [(u8, u8, u8, u8)];
+            const MINIMIZE: Spans = &[(5, 13, 12, 16)];
+            const MAXIMIZE: Spans = &[
+                (5, 5, 16, 8),
+                (5, 8, 6, 15),
+                (15, 8, 16, 15),
+                (5, 15, 16, 16),
+            ];
+            // The window behind (its thick top, its right side) and the one in front.
+            const RESTORE: Spans = &[
+                (8, 5, 15, 7),
+                (14, 7, 15, 12),
+                (13, 11, 14, 12),
+                (5, 8, 12, 10),
+                (5, 10, 6, 14),
+                (11, 10, 12, 14),
+                (5, 14, 12, 15),
+            ];
+            const CLOSE: Spans = &[
+                (6, 5, 7, 6),
+                (14, 5, 15, 6),
+                (5, 6, 8, 7),
+                (13, 6, 16, 7),
+                (6, 7, 9, 8),
+                (12, 7, 15, 8),
+                (7, 8, 10, 9),
+                (11, 8, 14, 9),
+                (8, 9, 13, 10),
+                (9, 10, 12, 11),
+                (8, 11, 13, 12),
+                (7, 12, 10, 13),
+                (11, 12, 14, 13),
+                (6, 13, 9, 14),
+                (12, 13, 15, 14),
+                (5, 14, 8, 15),
+                (13, 14, 16, 15),
+                (6, 15, 7, 16),
+                (14, 15, 15, 16),
+            ];
+            let spans = match self {
+                CaptionButton::Minimize => MINIMIZE,
+                CaptionButton::Maximize if maximized => RESTORE,
+                CaptionButton::Maximize => MAXIMIZE,
+                CaptionButton::Close => CLOSE,
+                CaptionButton::ToTray => return false,
+            };
+            // One mesh of whole-pixel quads: no feathering, so no soft or doubled edges, and a
+            // single pixel (the X's tips) is drawn too.
+            let ppp = ui.ctx().pixels_per_point();
+            let mut mesh = egui::Mesh::default();
+            for &(l, t, r, b) in spans {
+                let rc = Rect::from_min_max(
+                    at + vec2(l.into(), t.into()),
+                    at + vec2(r.into(), b.into()),
+                );
+                mesh.add_colored_rect(rc.round_to_pixels(ppp), ink);
+            }
+            p.add(egui::Shape::mesh(mesh));
+            true
+        }
     }
 
     /// Windows keeps the window's own title bar in UI Automation (its "TitleBar", built from the
@@ -6728,7 +7193,8 @@ pub mod caption {
 
     /// An era theme's caption button (#45) in its place `rc`: a shaded tile with an edge, its
     /// own face at rest (Close red; Mac OS X's graphite until the pointer is on it), lighter
-    /// under the pointer and darker pressed, faded while greyed or the window inactive; the
+    /// under the pointer and darker pressed, faded while greyed or the window inactive (or the
+    /// theme's own inactive face, edge and glyph: `caption.button.inactive` and the others); the
     /// glyph light on it (Windows 7's with a shadow), or Mac OS X's dark one shown only under
     /// the pointer. There, our Hide button is a plain picture in the bar, as a toolbar's.
     fn era_button(
@@ -6778,7 +7244,27 @@ pub mod caption {
         } else {
             Rect::from_center_size(at, size)
         };
-        let base = if close && (era != Shine::Aqua || hover || pressed) {
+        // The glyph's place, from the tile as laid out (unchanged by the snap below).
+        let glyph_at = tile.center().round();
+        // The tile on whole pixels, once, and both its face and its edge drawn from it: an odd
+        // size centred on a whole point (Luna's 21, Windows 7's 27) has half-pixel sides, where
+        // the face (a mesh, filling every pixel whose centre it covers) began a pixel before
+        // the edge (rounded to whole pixels when drawn), a sliver of the face outside the
+        // button's top and left edge (#1612).
+        let tile = super::snap(ui.ctx().pixels_per_point(), tile);
+        // While the window isn't the active one, the theme's own faces for it where it has them
+        // (Windows XP: the buttons and Close half-faded into the bar, their edge and glyph
+        // still crisp), else the button's own faded into the bar, as a greyed one's.
+        let inactive = enabled && !active;
+        let own = if close {
+            c.caption_close_inactive
+        } else {
+            c.caption_button_inactive
+        };
+        let own = (inactive && own.a() > 0).then_some(own);
+        let base = if let Some(own) = own {
+            own
+        } else if close && (era != Shine::Aqua || hover || pressed) {
             CLOSE_HOVER()
         } else {
             CAPTION_BUTTON()
@@ -6790,7 +7276,7 @@ pub mod caption {
         } else {
             base
         };
-        let base = if enabled && active {
+        let base = if (enabled && active) || own.is_some() {
             base
         } else {
             mix(base, bar, 0.55)
@@ -6812,7 +7298,9 @@ pub mod caption {
         };
         fill_shaded_corners(p, tile, top, bottom, &stops);
         let edge = match era {
-            Shine::Luna => c.gloss.gamma_multiply(0.9),
+            _ if !active && c.caption_edge_inactive.a() > 0 => c.caption_edge_inactive,
+            // Windows XP's edge is the gloss itself (white), not a softened one (#1612).
+            Shine::Luna => c.gloss,
             Shine::Aero => shade(bar, -0.35),
             Shine::Aqua => shade(base, -0.2),
         };
@@ -6828,15 +7316,18 @@ pub mod caption {
             Shine::Aero => (0.9, 1.5),
             Shine::Aqua => (0.55, 1.4),
         };
-        let at = tile.center().round();
+        let at = glyph_at;
         if era == Shine::Aqua {
             // Mac OS X shows its buttons' glyphs only under the pointer.
             if hover || pressed {
                 b.glyph(ui, p, at, CAPTION_INK(), maximized, size, width);
             }
         } else {
+            let glyph = c.caption_glyph_inactive;
             let ink = if enabled && active {
                 CLOSE_INK()
+            } else if inactive && glyph.a() > 0 {
+                glyph
             } else {
                 CLOSE_INK().gamma_multiply(0.7)
             };
@@ -6844,7 +7335,10 @@ pub mod caption {
                 let shadow = Color32::from_black_alpha(110);
                 b.glyph(ui, p, at + vec2(1.0, 1.0), shadow, maximized, size, width);
             }
-            b.glyph(ui, p, at, ink, maximized, size, width);
+            // Windows XP's own glyphs, placed from the tile's edge (on whole pixels).
+            if era != Shine::Luna || !b.xp_glyph(ui, p, tile.min, ink, maximized) {
+                b.glyph(ui, p, at, ink, maximized, size, width);
+            }
         }
         show_focus(ui, resp, tile);
     }
@@ -6883,7 +7377,7 @@ pub mod caption {
         let bar = bar_colour(active);
         let top = match st.era {
             Some(era) => {
-                let stops = bar_stops(era, bar, crate::theme::colors().gloss);
+                let stops = bar_stops(era, bar, crate::theme::colors().gloss, active);
                 fill_shaded(&p, rect, 0.0, &stops);
                 stops.first().map_or(bar, |s| s.1)
             }
@@ -7021,6 +7515,42 @@ pub mod caption {
             buttons: rects,
             icon,
             top,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// #1612: Luna's active bar has Windows XP's rows on Luna's own colour (each stop sits on
+        /// a row's centre at 100 %, so it is that row's colour), its light band first, and the
+        /// inactive bar keeps its stops.
+        #[test]
+        fn luna_active_bar_has_xp_rows() {
+            let near = |c: Color32, xp: u32| {
+                let [_, r, g, b] = xp.to_be_bytes();
+                let d = |x: u8, y: u8| x.abs_diff(y);
+                assert!(
+                    d(c.r(), r) <= 3 && d(c.g(), g) <= 3 && d(c.b(), b) <= 3,
+                    "{c:?} vs #{xp:06x}"
+                );
+            };
+            let bar = Color32::from_rgb(0x00, 0x54, 0xe3);
+            let stops = bar_stops(Shine::Luna, bar, Color32::WHITE, true);
+            let at = |row: f32| {
+                let t = (row + 0.5) / CAPTION_H;
+                stops.iter().find(|s| (s.0 - t).abs() < 1e-4).unwrap().1
+            };
+            near(at(1.0), 0x3d95ff); // the light band
+            near(stops[0].1, 0x3d95ff); // first: the sizing strip above takes it
+            near(at(2.0), 0x2b90ff);
+            near(at(7.0), 0x0054e3); // the bar's own colour
+            near(at(CAPTION_H - 7.0), 0x0069ff); // lighter toward the bottom
+            near(at(CAPTION_H - 1.0), 0x0041ce); // the dark bottom edge
+            let inactive = Color32::from_rgb(0x7a, 0x96, 0xdf);
+            let old = bar_stops(Shine::Luna, inactive, Color32::WHITE, false);
+            assert_eq!(old[0], (0.0, crate::derive::shade(inactive, 0.1)));
+            assert_eq!(old.len(), 8);
         }
     }
 }
@@ -8742,6 +9272,64 @@ example.org"; // values typed in, not texts to translate
     }
 
     #[test]
+    fn the_words_around_a_box_name_it() {
+        // The same sentence `english_lands_where_the_pieces_were` lays out.
+        assert_eq!(
+            sentence_names(
+                "Download no more than {mb} MBytes\nevery {hours} hours",
+                &["mb", "hours"]
+            ),
+            vec![
+                "Download no more than MBytes".to_owned(),
+                "every hours".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_translation_names_a_box_in_its_own_words() {
+        // Boxes first on each line, as `a_translation_moves_the_boxes` places them: the words
+        // between two boxes join both their names.
+        assert_eq!(
+            sentence_names("{hours} h: {mb} MB", &["mb", "hours"]),
+            vec!["h: MB".to_owned(), "h:".to_owned()]
+        );
+        // A box alone on its line takes the sentence's own words, placeholders dropped; a
+        // sentence of nothing but the box names it with nothing.
+        assert_eq!(
+            sentence_names("{mb}\nevery {hours} hours", &["mb"]),
+            vec!["every hours".to_owned()]
+        );
+        assert_eq!(sentence_names("{mb}", &["mb"]), vec![String::new()]);
+    }
+
+    #[test]
+    fn real_translations_name_their_boxes_in_their_own_words() {
+        // Box first, as the Japanese catalog runs it.
+        assert_eq!(
+            sentence_names("{files}個のファイルを同時にダウンロード", &["files"]),
+            vec!["個のファイルを同時にダウンロード".to_owned()]
+        );
+        // Right to left, the words in the sentence's own logical order.
+        assert_eq!(
+            sentence_names("تنزيل {files} ملفا في الوقت نفسه", &["files"]),
+            vec!["تنزيل ملفا في الوقت نفسه".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_leftover_placeholder_and_an_accelerator_letter_drop_out_of_a_name() {
+        assert_eq!(
+            sentence_names("Download {files} {n} files", &["files"]),
+            vec!["Download files".to_owned()]
+        );
+        assert_eq!(
+            sentence_names("D&ownload {files} files", &["files"]),
+            vec!["Download files".to_owned()]
+        );
+    }
+
+    #[test]
     fn a_long_lead_pushes_a_left_aligned_box() {
         let line = [SentenceLine {
             lead: Lead::Left(242.0),
@@ -8852,5 +9440,24 @@ example.org"; // values typed in, not texts to translate
         assert_eq!(texts.last().unwrap().2, "c");
         assert_eq!(texts.last().unwrap().1, 364.0);
         assert!(rects[1].min.x > 170.0);
+    }
+
+    #[test]
+    fn caption_for_keeps_whole_long_caption() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let p = ui.painter();
+            let long_caption =
+                "Anzahl der Wiederholungsversuche für jede Datei, wenn der Download fehlgeschlagen ist:";
+            let drawn = Rect::from_min_size(pos2(10.0, 10.0), vec2(100.0, 20.0));
+            note_caption(p, long_caption, drawn);
+            let control_rect = Rect::from_min_size(pos2(120.0, 10.0), vec2(50.0, 20.0));
+            let name = caption_for(ui.ctx(), control_rect);
+            assert_eq!(
+                name,
+                Some("Anzahl der Wiederholungsversuche für jede Datei, wenn der Download fehlgeschlagen ist".to_owned())
+            );
+        });
+        out.textures_delta.clear();
     }
 }
