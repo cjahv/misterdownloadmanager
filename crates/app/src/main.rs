@@ -113,7 +113,7 @@ pub const MAIN_TITLE: &str = concat!("Mister Download Manager ", env!("CARGO_PKG
 /// The app icon (art/, made with ChatGPT; sizes by tools/icon/build_icon.py), for windows that
 /// show one as IDM's do: the 256 px size, which the system scales down for the title bar, the
 /// taskbar and Alt+Tab at any display scaling. On macOS none: the Dock keeps the app bundle's own
-/// icon (AppIcon.icns, every size, tools/installer/build-macos.sh), which an icon set at run
+/// layered icon (tools/installer/build-macos.sh), which an icon set at run
 /// time would replace.
 pub fn app_icon() -> std::sync::Arc<egui::IconData> {
     if cfg!(target_os = "macos") {

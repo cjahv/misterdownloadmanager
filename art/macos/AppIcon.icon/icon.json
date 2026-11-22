@@ -1,0 +1,11 @@
+{
+  "fill-specializations": [
+    { "value": { "automatic-gradient": "srgb:0.065,0.385,0.800,1.000" } },
+    { "appearance": "dark", "value": { "automatic-gradient": "srgb:0.045,0.124,0.248,1.000" } }
+  ],
+  "groups": [
+    { "layers": [{ "image-name": "Tray.svg", "name": "Receiving tray" }], "name": "Tray" },
+    { "layers": [{ "image-name": "Download.svg", "name": "Download ribbon" }], "name": "Download" }
+  ],
+  "supported-platforms": { "squares": ["macOS"] }
+}
