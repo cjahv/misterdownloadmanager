@@ -2240,6 +2240,7 @@
 	Magnet link	رابط مغناطيسي
 #. message or event log entry in the main window
 	Main download queue	قائمة انتظار التنزيل الرئيسية
+	Main menu	القائمة الرئيسية
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 #, machine
 	Make everything larger / smaller (View → Interface size)	تكبير/تصغير كل شيء (عرض ← حجم الواجهة)

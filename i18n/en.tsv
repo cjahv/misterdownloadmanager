@@ -2121,6 +2121,8 @@
 	Magnet link	Magnet link
 #. message or event log entry in the main window
 	Main download queue	Main download queue
+#. text in the main window (menus, toolbar, Categories pane)
+	Main menu	Main menu
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)
 	Make everything larger / smaller (View → Interface size)	Make everything larger / smaller (View → Interface size)
 #. what a keyboard shortcut does in the Help menu's windows (About, updates, shortcuts, Tell a friend)

@@ -446,7 +446,7 @@ fn menu_answer(step: DupStep, start_now: bool) -> &'static str {
 
 /// Menu, toolbar and context-menu commands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Cmd {
+pub(crate) enum Cmd {
     AddUrl,
     /// Help → a page of the website (`""` = home).
     HelpPage(&'static str),
@@ -1554,6 +1554,8 @@ pub struct App {
     /// The policy AppKit actually accepted, independent of the saved preference.
     #[cfg(target_os = "macos")]
     dock_hidden: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) toolbar_menu_at: Option<egui::Pos2>,
     /// Linux: the icon being made beside the window (#828: its library waits for the session
     /// bus); `tray` once it is.
     #[cfg(target_os = "linux")]
@@ -2283,6 +2285,8 @@ impl App {
             tray: None,
             #[cfg(target_os = "macos")]
             dock_hidden: false,
+            #[cfg(target_os = "macos")]
+            toolbar_menu_at: None,
             #[cfg(target_os = "linux")]
             tray_setup: None,
             tray_limiter: None,
@@ -3505,7 +3509,7 @@ impl App {
             "menu" => {
                 self.popup = None;
                 let (index, sub) = tab.split_once(':').unwrap_or((tab, ""));
-                let index = index.parse().unwrap_or(0);
+                let index = index.parse::<usize>().unwrap_or(0).min(4);
                 self.open_menu = Some(index);
                 // menu:3:theme opens View → Theme (#45), menu:3:size View → Interface size (#262).
                 let wanted = match sub {
@@ -4927,6 +4931,12 @@ impl App {
                     .is_some_and(|tray| tray.icon() == crate::tray::Icon::There);
             if hide != self.dock_hidden && crate::unix::set_dock_hidden(hide) {
                 self.dock_hidden = hide;
+                self.toolbar_menu_at = None;
+                self.open_menu = None;
+                if self.bar_keys {
+                    self.give_keys(Pane::Toolbar);
+                }
+                ctx.request_repaint();
             }
         }
         if !crate::offscreen() {
@@ -5016,14 +5026,14 @@ impl App {
                 #[cfg(target_os = "macos")]
                 TrayCmd::Toggle if self.dock_hidden => {
                     self.show_window(ctx);
-                    crate::unix::macos_activate_app();
+                    crate::unix::macos_show_main_window();
                     continue;
                 }
                 TrayCmd::Show => {
                     self.show_window(ctx);
                     #[cfg(target_os = "macos")]
                     if self.dock_hidden {
-                        crate::unix::macos_activate_app();
+                        crate::unix::macos_show_main_window();
                     }
                     continue;
                 }
@@ -8209,7 +8219,7 @@ impl App {
     /// `target`: the right-clicked download, if any. Stop, Resume, Remove and the queue
     /// commands act on every selected download (or the right-clicked one outside the
     /// selection); the others on one download.
-    fn run(&mut self, cmd: Cmd, target: Option<u64>, ctx: &egui::Context) {
+    pub(crate) fn run(&mut self, cmd: Cmd, target: Option<u64>, ctx: &egui::Context) {
         // The log a crash report quotes: what was asked for (commands carry no addresses).
         tracing::info!("command {cmd:?}");
         let many = self.targets(target);
@@ -9159,7 +9169,7 @@ impl App {
     // ---- menus -----------------------------------------------------------------------------
 
     /// IDM 6.42's menus (notes/ui-spec/menus.md); unbuilt features are greyed out.
-    fn menu_entries(&self, index: usize) -> Vec<MenuEntry<Cmd>> {
+    pub(crate) fn menu_entries(&self, index: usize) -> Vec<MenuEntry<Cmd>> {
         use MenuEntry::{Item as I, Sep, Sub};
         let sel = self.selected_item();
         let picked = self.chosen(None);
@@ -10304,18 +10314,9 @@ impl App {
         }
     }
 
-    fn paint(&mut self, ui: &mut Ui) {
+    fn window_menu(&mut self, ui: &mut Ui, o: egui::Pos2, w: f32) -> Option<(Cmd, Option<u64>)> {
         let ctx = ui.ctx().clone();
-        let full = ui.max_rect();
-        // The client area, laid out from the right in a right-to-left interface (winui).
-        let _surface = winui::Surface::enter(full.min.x, full.max.x);
-        // A style theme's title bar, drawn above the layout (Windows; #45), mirrored right to
-        // left as the progress window's.
-        let full = self.drawn_caption(ui, full);
-        let o = full.min;
-        let (w, h) = (full.width(), full.height());
-        let mut chosen: Option<(Cmd, Option<u64>)> = None;
-
+        let mut chosen = None;
         // The menu bar from the keyboard: F10 or Alt pressed alone opens its first menu, Alt and a
         // menu's underlined letter that menu (Windows and Linux); on macOS, whose apps have no
         // Alt keys, Ctrl+F2 (the system's key for the menu bar).
@@ -10478,7 +10479,9 @@ impl App {
         }
 
         // Menu bar and its popups: which menu is open is chrome::menubar_next's to say.
-        if let Some(event) = chrome::menu_bar(ui, o, w, self.open_menu) {
+        if !cfg!(target_os = "macos")
+            && let Some(event) = chrome::menu_bar(ui, o, w, self.open_menu)
+        {
             if event == chrome::MenuBarEvent::Keys {
                 self.give_keys(Pane::Bar);
             }
@@ -10531,6 +10534,25 @@ impl App {
             }
         }
 
+        chosen
+    }
+
+    fn paint(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let full = ui.max_rect();
+        // The client area, laid out from the right in a right-to-left interface (winui).
+        let _surface = winui::Surface::enter(full.min.x, full.max.x);
+        // A style theme's title bar, drawn above the layout (Windows; #45), mirrored right to
+        // left as the progress window's.
+        let full = self.drawn_caption(ui, full);
+        let o = full.min;
+        let (w, h) = (full.width(), full.height());
+        let mut chosen = if cfg!(target_os = "macos") && self.open_menu.is_none() {
+            None
+        } else {
+            self.window_menu(ui, o, w)
+        };
+
         // The keys go round the toolbar, the Categories tree and the download list with Tab and
         // Shift+Tab (`tab_to`), while no menu is open and no text box has them (#1190: the
         // toolbar couldn't be reached at all). A press anywhere takes them from the toolbar (the
@@ -10560,6 +10582,12 @@ impl App {
                     None
                 };
                 let pane = tab_to(from, self.show_categories, back);
+                #[cfg(target_os = "macos")]
+                let pane = if pane == Pane::Bar && !self.dock_hidden {
+                    tab_to(Some(Pane::Bar), self.show_categories, back)
+                } else {
+                    pane
+                };
                 self.give_keys(pane);
                 crate::chrome::show_cues(&ctx);
             }
@@ -10608,7 +10636,17 @@ impl App {
         ];
         let tb: Vec<(Icon, &str, bool)> = buttons.iter().map(|(i, l, e, _)| (*i, *l, *e)).collect();
         let tb_keys = (self.toolbar_keys && free).then_some(self.toolbar_at);
-        match chrome::toolbar(ui, o, w, &tb, tb_keys) {
+        #[cfg(target_os = "macos")]
+        let menu_width = if self.dock_hidden { 44.0 } else { 0.0 };
+        #[cfg(not(target_os = "macos"))]
+        let menu_width = 0.0;
+        match chrome::toolbar(
+            ui,
+            o + egui::vec2(menu_width, 0.0),
+            w - menu_width,
+            &tb,
+            tb_keys,
+        ) {
             Some(ToolbarEvent::Click(k)) => chosen = Some((buttons[k].3, None)),
             Some(ToolbarEvent::Drop(k, at)) => {
                 let kind = match buttons[k].0 {
@@ -10624,6 +10662,14 @@ impl App {
             None => {}
         }
 
+        #[cfg(target_os = "macos")]
+        if self.dock_hidden {
+            let (focus, anchor) = chrome::mac_toolbar_menu(ui, o, self.bar_keys, free);
+            if focus {
+                self.give_keys(Pane::Bar);
+            }
+            self.toolbar_menu_at = anchor;
+        }
         // Categories pane.
         let list_left = if self.show_categories {
             let rows = self.tree_rows();
@@ -10633,7 +10679,7 @@ impl App {
             let cat_w = (self.settings.categories_width as f32).clamp(100.0, max_w);
             let right = o.x + 6.0 + cat_w;
             let split = winui::rect(egui::Rect::from_min_max(
-                pos2(right, o.y + chrome::MENU_H + chrome::pane_top()),
+                pos2(right, o.y + chrome::WINDOW_MENU_H + chrome::pane_top()),
                 pos2(right + 4.0, o.y + h - STRIP_H - 5.0),
             ));
             let sr = ui.interact(
@@ -10744,7 +10790,10 @@ impl App {
         self.selection.retain(&ids);
         let (selected, focus) = self.selection.rows(&ids);
         let outer = egui::Rect::from_min_max(
-            pos2(o.x + list_left, o.y + chrome::MENU_H + chrome::pane_top()),
+            pos2(
+                o.x + list_left,
+                o.y + chrome::WINDOW_MENU_H + chrome::pane_top(),
+            ),
             pos2(o.x + w - 7.0, o.y + h - STRIP_H - 4.0),
         );
         self.list.menu_open = self.popup.is_some() || self.open_menu.is_some();

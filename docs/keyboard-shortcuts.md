@@ -72,7 +72,7 @@ a branch, and **Home** / **End** go to the first / last node.
 
 | Keys | What they do |
 |---|---|
-| **F10**, or **Alt** pressed alone | Open the first menu (**Tasks**); on a Mac **Ctrl+F2** |
+| **F10**, or **Alt** pressed alone | Open the first menu (**Tasks**); on a Mac **Ctrl+F2** focuses the system menu bar or opens the toolbar menu when the Dock icon is hidden |
 | **Alt** + a menu's underlined letter | Open that menu (Windows and Linux) |
 | **Up** / **Down** | Move through an open menu |
 | **Home** / **End** | The first / last item of an open menu |

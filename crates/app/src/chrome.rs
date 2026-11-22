@@ -13,6 +13,11 @@ use crate::winui::{self, text_font, text_width_font};
 
 /// Height of our menu bar band incl. its #f0f0f0 bottom line (IDM: non-client y −20…−1).
 pub const MENU_H: f32 = 20.0;
+pub const WINDOW_MENU_H: f32 = if cfg!(target_os = "macos") {
+    0.0
+} else {
+    MENU_H
+};
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
@@ -396,7 +401,7 @@ pub fn menubar_next(open: Option<usize>, event: MenuBarEvent) -> Option<usize> {
 
 // ---- popup menus ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum MenuEntry<C> {
     /// Label (with `&` before the mnemonic letter), command, enabled, checked.
     Item(&'static str, C, bool, bool),
@@ -447,6 +452,11 @@ fn menu_caption(label: &str) -> &str {
     label
 }
 
+#[cfg(target_os = "macos")]
+pub fn mac_caption(label: &str) -> String {
+    menu_caption(&plain(label).0).to_owned()
+}
+
 fn plain(label: &str) -> (String, Option<usize>) {
     let mut out = String::new();
     let mut mnemonic = None;
@@ -474,7 +484,7 @@ pub fn access_key(label: &str) -> Option<String> {
 }
 
 /// The menu bar's titles, in English (their translations: context "menubar").
-#[cfg(test)]
+#[cfg(any(test, target_os = "macos"))]
 pub fn bar_titles() -> Vec<&'static str> {
     MENUS.iter().map(|m| m.0).collect()
 }
@@ -1959,6 +1969,62 @@ pub fn pane_top() -> f32 {
     }
 }
 
+/// The complete menu of a Mac window whose Dock icon is hidden.
+#[cfg(target_os = "macos")]
+pub fn mac_toolbar_menu(ui: &Ui, o: Pos2, keys: bool, free: bool) -> (bool, Option<Pos2>) {
+    let ctx = ui.ctx();
+    let rect = winui::rect(egui::Rect::from_center_size(
+        o + egui::vec2(22.0, pane_top() * 0.5),
+        egui::vec2(34.0, 32.0),
+    ));
+    let label = crate::i18n::t("Main menu");
+    let button = ui
+        .interact(
+            rect,
+            egui::Id::unique("mac-main-menu"),
+            winui::pointer_only(),
+        )
+        .on_hover_text(label);
+    winui::expose(&button, egui::Role::Button, label, true, None);
+    ctx.accesskit_node_builder(button.id, |node| {
+        node.set_has_popup(egui::accesskit::HasPopup::Menu)
+    });
+    let focus = winui::focus_target(ctx, button.id);
+    let c = crate::theme::colors();
+    ui.painter().rect_filled(
+        rect,
+        14.0,
+        if button.hovered() {
+            c.toolbar_hot
+        } else {
+            c.list
+        },
+    );
+    for dy in [-4.0, 0.0, 4.0] {
+        let center = rect.center() + egui::vec2(0.0, dy);
+        ui.painter().line_segment(
+            [center - egui::vec2(6.0, 0.0), center + egui::vec2(6.0, 0.0)],
+            egui::Stroke::new(1.5, c.text),
+        );
+    }
+    if keys || focus {
+        winui::keys_with(ctx, button.id);
+        winui::focus_ring(ui.painter(), rect);
+    }
+    let open = free
+        && ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::CTRL, egui::Key::F2)
+                || keys
+                    && [egui::Key::Enter, egui::Key::Space, egui::Key::ArrowDown]
+                        .iter()
+                        .any(|k| i.consume_key(egui::Modifiers::NONE, *k))
+        });
+    (
+        focus,
+        (button.clicked() || open).then_some(rect.left_bottom()),
+    )
+}
+
 /// The main toolbar: `buttons` (icon, English label, enabled), and `keys`, the button that has
 /// the keys while the toolbar has them (Tab reaches it: #1190). With the keys, Left / Right
 /// (mirrored right to left), Home and End move along the buttons, greyed ones too (a screen
@@ -1974,7 +2040,7 @@ pub fn toolbar(
     keys: Option<usize>,
 ) -> Option<ToolbarEvent> {
     let p = ui.painter().clone();
-    let top = o.y + MENU_H;
+    let top = o.y + WINDOW_MENU_H;
     let c = crate::theme::colors();
     fill(&p, o.x, top, o.x + width - 1.0, top, c.toolbar_line);
     fill(
@@ -2424,7 +2490,7 @@ pub fn categories(
     let p = ui.painter().clone();
     let mac = crate::theme::mac_layout();
     let row_h = if mac { 28.0 } else { 16.0 };
-    let y0 = o.y + pane_top() + MENU_H; // frame top
+    let y0 = o.y + pane_top() + WINDOW_MENU_H; // frame top
     // Laid out in English (frame x 6 .. right); every part made where it is on screen — the pane
     // on the right in RTL, its tree indenting from the right.
     let frame = winui::rect(Rect::from_min_max(

@@ -6,6 +6,9 @@
 //! crash reports (at the end): signals and Mach exceptions through crash-handler, thread and
 //! process ids through libc.
 
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_menu;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -3785,6 +3788,27 @@ pub fn set_dock_hidden(hidden: bool) -> bool {
         NSApplicationActivationPolicy::Regular
     };
     NSApplication::sharedApplication(main).setActivationPolicy(policy)
+}
+
+/// Focus the main window alone after an explicit status-item or toolbar action.
+#[cfg(target_os = "macos")]
+pub fn macos_show_main_window() -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSString;
+
+    let app = NSApplication::sharedApplication(MainThreadMarker::new()?);
+    let title = NSString::from_str(crate::MAIN_TITLE);
+    let window = app
+        .windows()
+        .iter()
+        .find(|window| window.title() == title)?;
+    if !app.isActive() || !window.isKeyWindow() || !window.isVisible() {
+        macos_activate_app();
+        window.makeKeyAndOrderFront(None);
+        window.orderFrontRegardless();
+    }
+    Some(window)
 }
 
 /// macOS: whether `NSApplication.sharedApplication` is currently the active foreground app with a
