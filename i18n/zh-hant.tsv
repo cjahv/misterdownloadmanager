@@ -294,6 +294,8 @@
 #. RSS feeds window, Download rules: shown when there are no rules yet
 #, machine
 	A rule adds the new articles whose titles it matches, as they come.	規則會在新文章到達時，新增標題符合規則的文章。
+	Checked, a click on MDM's icon shows what is downloading, with Pause and Cancel, and a double click opens the window; unchecked, a click shows or hides the window	開啟後，按一下狀態圖示可查看、暫停或取消正在進行的下載，按兩下可開啟主視窗。關閉後，按一下可顯示或隱藏主視窗。
+	Show downloads when the notification area icon is clicked	按一下狀態圖示時顯示下載進度
 #. text in errors.rs
 #. an error: a server on this computer redirected the download to the internet, which would not go through the chosen network adapter; {adapter} its name
 #, machine

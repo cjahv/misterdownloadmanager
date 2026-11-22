@@ -5759,8 +5759,12 @@ pub fn tab_keys(ui: &Ui, n: usize, current: usize) -> Option<usize> {
         return None;
     }
     let (next, prev) = ui.input_mut(|i| {
-        let ctrl = egui::Modifiers::COMMAND;
-        let ctrl_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let ctrl = if crate::theme::mac_layout() {
+            egui::Modifiers::CTRL
+        } else {
+            egui::Modifiers::COMMAND
+        };
+        let ctrl_shift = ctrl | egui::Modifiers::SHIFT;
         (
             i.consume_key(ctrl, egui::Key::Tab) || i.consume_key(ctrl, egui::Key::PageDown),
             i.consume_key(ctrl_shift, egui::Key::Tab) || i.consume_key(ctrl, egui::Key::PageUp),
@@ -6023,6 +6027,9 @@ pub fn tabs_light(
         );
         let resp = enter_is_not_a_click(ui, resp);
         if resp.clicked() && !sel {
+            if mac {
+                resp.request_focus();
+            }
             clicked = Some(i);
         }
         if sel {
