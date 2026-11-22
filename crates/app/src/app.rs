@@ -10373,7 +10373,7 @@ impl App {
     /// first item is lit, as Windows lights it, and a screen reader says it at once (#1190).
     fn open_popup_asked(&mut self, kind: Popup, at: Pos2, ctx: &egui::Context) {
         self.open_popup(kind, at);
-        if !ctx.input(|i| i.pointer.any_released()) {
+        if !self.uses_native_popup() && !ctx.input(|i| i.pointer.any_released()) {
             chrome::start_keyboard(ctx, &format!("popup-{}", self.popup_serial));
         }
     }

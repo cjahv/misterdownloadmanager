@@ -5210,6 +5210,9 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
         );
         let resp = winui::enter_is_not_a_click(ui, resp);
         if resp.clicked() && !sel {
+            if mac {
+                resp.request_focus();
+            }
             clicked = Some(i);
         }
         if sel {
