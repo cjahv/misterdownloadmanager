@@ -8306,3 +8306,4 @@ unit	{n} MB	{n} MB
 #. {n} = a number (keep the braces as they are)
 #, machine
 unit	{n} MB/sec	{n} MB/秒
+	Filter {column}	篩選{column}
