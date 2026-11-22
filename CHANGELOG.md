@@ -7,6 +7,8 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ### Added
 
+- The macOS Native download window puts the filename, progress, speed and time left together. Connection ranges use the same accent as overall progress.
+
 - On macOS, choosing Quit in the Dock or the application menu (⌘Q) hides the window while downloads continue. Click the status icon to reopen the window, or choose Exit in its menu to quit.
 
 - The macOS Native download table shows the Queue title and gives its column filter a dedicated target. Clicking the same filter closes its panel even at the window edge.
