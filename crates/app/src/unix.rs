@@ -7,6 +7,8 @@
 //! process ids through libc.
 
 #[cfg(target_os = "macos")]
+pub(crate) mod macos_choices;
+#[cfg(target_os = "macos")]
 pub(crate) mod macos_icons;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos_menu;

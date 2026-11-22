@@ -2096,6 +2096,9 @@ pub fn field_frame(p: &Painter, rc: Rect, look: FieldLook) {
         Stroke::new(crate::theme::metrics().border, border),
         StrokeKind::Inside,
     );
+    if crate::theme::mac_layout() {
+        return;
+    }
     hline(
         p,
         rc.left() + radius,
@@ -2280,6 +2283,15 @@ pub fn edit_focus_line(ui: &Ui, resp: &Response, rc: Rect) {
 /// The 2 px accent along a focused box's bottom edge. Light: the bottom of its rounded
 /// frame, curving into the corners as Windows 11 draws it; dark: IDM's straight line.
 pub fn focus_bottom(p: &Painter, rc: Rect) {
+    if crate::theme::mac_layout() {
+        p.rect_stroke(
+            rc.expand(1.5),
+            control_radius() + 1.5,
+            Stroke::new(2.5, accent()),
+            StrokeKind::Inside,
+        );
+        return;
+    }
     let h = crate::theme::metrics().focus_line;
     // GNOME: a ring inside the box, the accent half seen through.
     if crate::theme::current().controls.field_focus == crate::palette::FieldFocus::Ring {
@@ -3054,7 +3066,12 @@ fn combo_chevron(p: &Painter, rc: Rect) {
     } else {
         rc.right() - 1.0 - 19.0
     };
-    let (cx, cy) = (arrow_left + 6.0, rc.top() + 8.0);
+    let cy = if crate::theme::mac_layout() {
+        rc.center().y - 2.0
+    } else {
+        rc.top() + 8.0
+    };
+    let (cx, cy) = (arrow_left + 6.0, cy);
     p.line(
         vec![
             pos2(cx, cy + 0.5),
@@ -3066,6 +3083,26 @@ fn combo_chevron(p: &Painter, rc: Rect) {
             crate::theme::colors().combo_chevron,
         ),
     );
+}
+
+/// A fixed-choice Mac pop-up shows paired chevrons; an editable combo has one.
+fn choice_chevron(p: &Painter, rc: Rect, enabled: bool) {
+    let center = combo_zone(rc).center();
+    let ink = if enabled {
+        LIGHT_TEXT()
+    } else {
+        LIGHT_DISABLED()
+    };
+    for sign in [-1.0, 1.0] {
+        p.line(
+            vec![
+                center + vec2(-3.0, sign),
+                center + vec2(0.0, 4.0 * sign),
+                center + vec2(3.0, sign),
+            ],
+            Stroke::new(1.3, ink),
+        );
+    }
 }
 
 /// Combo frame. Dark: 1 px border (#8d8d8d, or #0078d4 when focused), 2 px white ring, dark
@@ -3087,7 +3124,11 @@ pub fn combo(ui: &mut Ui, rc: Rect, value: &str, id: &str) -> Response {
     // A drop-down list is drawn as Windows 11 draws them (and as combo_light does): a button's
     // face, its state across the whole of it, focus shown as a button's.
     dropdown_frame_light(ui.painter(), rc, State::of(&resp, true));
-    combo_chevron(ui.painter(), rc);
+    if crate::theme::mac_layout() {
+        choice_chevron(ui.painter(), rc, true);
+    } else {
+        combo_chevron(ui.painter(), rc);
+    }
     show_focus(ui, &resp, rc.shrink(2.0));
     // Short of the arrow zone: a longer value ends in "..." and shows whole on hover.
     let shown = ellipsize(ui.painter(), &tahoma(), value, rc.width() - 5.0 - 22.0);
@@ -3142,6 +3183,21 @@ pub fn combo_arrow(ui: &mut Ui, rc: Rect, id: &str, open: bool) -> Response {
     let resp = opener_click(ui, resp);
     let state = State::of(&resp, true).open_if(open);
     let c = crate::theme::colors();
+    if crate::theme::mac_layout() {
+        let ink = if open { c.subtle_pressed } else { c.subtle_hot };
+        if state != State::Normal {
+            ui.painter().rect_filled(zone.shrink(2.0), 4.0, ink);
+            combo_chevron(ui.painter(), rc);
+        }
+        expose(
+            &resp,
+            egui::Role::Button,
+            crate::i18n::t("Show history"),
+            true,
+            None,
+        );
+        return resp;
+    }
     let tint = match state {
         State::Hot => Some(c.combo_arrow_hot),
         State::Pressed | State::Open => Some(c.combo_arrow_pressed),
@@ -3207,11 +3263,10 @@ pub fn drop_list(
     empty: &str,
     open: &mut bool,
 ) -> Option<usize> {
-    use crate::chrome::{MenuEntry, PopupResult, label};
     // A menu label: long addresses shortened in the middle, "&" kept as text (not an access key).
     let shown = |t: &str| {
         let n = t.chars().count();
-        let short: String = if n > 72 {
+        if n > 72 {
             t.chars()
                 .take(36)
                 .chain(std::iter::once('\u{2026}'))
@@ -3219,9 +3274,24 @@ pub fn drop_list(
                 .collect()
         } else {
             t.to_owned()
-        };
-        label(&short.replace('&', "&&"))
+        }
     };
+    #[cfg(target_os = "macos")]
+    if crate::theme::mac_layout() && !crate::offscreen() {
+        return crate::unix::macos_choices::choose(
+            ui.ctx(),
+            widget_id(ui, ("history", id)),
+            anchor,
+            items
+                .iter()
+                .take(crate::settings::HISTORY)
+                .map(|s| shown(s)),
+            None,
+            empty,
+            open,
+        );
+    }
+    use crate::chrome::{MenuEntry, PopupResult, label};
     let entries: Vec<MenuEntry<usize>> = if items.is_empty() {
         vec![MenuEntry::Item(label(empty), usize::MAX, false, false)]
     } else {
@@ -3229,7 +3299,7 @@ pub fn drop_list(
             .iter()
             .take(crate::settings::HISTORY)
             .enumerate()
-            .map(|(i, t)| MenuEntry::Item(shown(t), i, true, false))
+            .map(|(i, t)| MenuEntry::Item(label(&shown(t).replace('&', "&&")), i, true, false))
             .collect()
     };
     // Under the box's leading edge (its right one in a right-to-left interface, where menus
@@ -4228,7 +4298,7 @@ fn paint_button(
     let c = crate::theme::colors();
     let m = crate::theme::metrics();
     let look = crate::theme::current().controls.button;
-    if crate::theme::mac_layout() && shape == Shape::Push {
+    if crate::theme::mac_layout() && matches!(shape, Shape::Push | Shape::DropDown) {
         let radius = 6.0_f32.min(rc.height() / 2.0);
         p.rect_filled(rc, radius, face.fill);
         p.rect_stroke(
@@ -6271,9 +6341,31 @@ pub fn combo_light(
     } else {
         rc.right() - 13.0
     };
-    chevron_light(&p, pos2(chevron_x, rc.top() + 8.0), enabled);
+    if crate::theme::mac_layout() {
+        choice_chevron(&p, rc, enabled);
+    } else {
+        chevron_light(&p, pos2(chevron_x, rc.top() + 8.0), enabled);
+    }
+
     // Over the face (drawn before it, the face hid it).
     show_focus(ui, &resp, rc.shrink(3.0));
+    #[cfg(target_os = "macos")]
+    if open && crate::theme::mac_layout() && !crate::offscreen() {
+        let result = crate::unix::macos_choices::choose(
+            ui.ctx(),
+            key,
+            rc,
+            items.iter().map(|s| crate::i18n::t(s)),
+            Some(selected),
+            "",
+            &mut open,
+        );
+        ui.data_mut(|d| d.insert_temp(key, open));
+        if !open {
+            resp.request_focus();
+        }
+        return result.filter(|i| *i < items.len() && *i != selected);
+    }
     if open {
         // The list: the shared popup (a window of its own, never clipped by the dialog, kept on
         // the screen; the keys, the pointer), the choice marked.
@@ -6516,6 +6608,37 @@ pub fn to_tray_button(ui: &mut Ui, rc: Rect, id: &str, tip: &str) -> Response {
 /// The flat icon button with a × drawn in the text ink: closes a borderless window of ours that
 /// has no title bar (the tray icon's panel, #1365). `tip` is English, translated here.
 pub fn close_button(ui: &mut Ui, rc: Rect, id: &str, tip: &str) -> Response {
+    if crate::theme::mac_layout() {
+        let resp = ui.interact(rc, widget_id(ui, ("close", id)), Sense::click());
+        let state = State::of(&resp, true);
+        let c = crate::theme::colors();
+        let size = rc.width().min(rc.height());
+        let radius = (size * 0.38).min(9.0);
+        let center = rc.center();
+        let fill = match state {
+            State::Pressed => c.subtle_pressed,
+            State::Hot => c.subtle_hot,
+            _ => Color32::TRANSPARENT,
+        };
+        ui.painter().circle_filled(center, radius, fill);
+        let arm = radius * 0.43;
+        let stroke = Stroke::new(
+            1.5,
+            if state == State::Normal {
+                MUTED()
+            } else {
+                LIGHT_TEXT()
+            },
+        );
+        for slope in [-1.0, 1.0] {
+            let offset = vec2(arm, arm * slope);
+            ui.painter()
+                .line_segment([center - offset, center + offset], stroke);
+        }
+        expose(&resp, egui::Role::Button, crate::i18n::t(tip), true, None);
+        show_focus(ui, &resp, rc);
+        return resp.on_hover_text(crate::i18n::t(tip));
+    }
     let resp = icon_button_light(ui, rc, id, true, tip);
     let c = rc.center().round();
     let ink = Stroke::new(1.0, LIGHT_TEXT());

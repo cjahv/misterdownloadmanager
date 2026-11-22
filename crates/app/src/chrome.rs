@@ -2499,21 +2499,26 @@ pub fn categories(
         pos2(right - 19.0, y0 + 2.0),
         vec2(16.0, 15.0),
     ));
-    let cr = ui
-        .interact(close, egui::Id::unique("cat-close"), winui::pointer_only())
-        // i18n: tooltip of the × that closes the Categories pane
-        .on_hover_text(crate::i18n::t("Close"));
-    if let Some(c) = winui::subtle_fill(winui::State::of(&cr, true), crate::theme::colors()) {
-        p.rect_filled(close, crate::theme::metrics().part_radius, c);
-    }
-    text_font(
-        &p,
-        winui::arial_bold(),
-        right - 15.0,
-        y0 + 13.0,
-        crate::i18n::t("x"),
-        TEXT(),
-    );
+    let cr = if mac {
+        winui::close_button(ui, close, "categories-close", "Close")
+    } else {
+        let cr = ui
+            .interact(close, egui::Id::unique("cat-close"), winui::pointer_only())
+            // i18n: tooltip of the × that closes the Categories pane
+            .on_hover_text(crate::i18n::t("Close"));
+        if let Some(c) = winui::subtle_fill(winui::State::of(&cr, true), crate::theme::colors()) {
+            p.rect_filled(close, crate::theme::metrics().part_radius, c);
+        }
+        text_font(
+            &p,
+            winui::arial_bold(),
+            right - 15.0,
+            y0 + 13.0,
+            crate::i18n::t("x"),
+            TEXT(),
+        );
+        cr
+    };
     if cr.clicked() {
         event = Some(TreeEvent::Close);
     }

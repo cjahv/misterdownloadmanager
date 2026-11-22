@@ -5274,7 +5274,7 @@ fn tabs(ui: &mut Ui, o: Pos2, page: usize) -> Option<usize> {
                     if sel {
                         crate::theme::colors().selection
                     } else {
-                        winui::TAB_HOT()
+                        crate::theme::colors().subtle_hot
                     },
                 );
             }

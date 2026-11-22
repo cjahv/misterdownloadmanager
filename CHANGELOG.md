@@ -7,6 +7,8 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ### Added
 
+- macOS form fields have a continuous focus ring. History and fixed-choice menus use AppKit, and ⌘W closes the front window. Add URL aligns the address and authorization fields in one column.
+
 - macOS’s Native theme uses AppKit for main-window command pop-ups, a sidebar for Settings, segmented tabs and rounded scroll thumbs. Add URL and removal confirmations place their actions together. Return cancels a removal unless its action is explicitly focused.
 
 - macOS uses the system menu bar for Tasks, File, Downloads, View and Help. Settings (⌘,) and Quit (⌘Q) are in the application menu. Options → General can hide the Dock icon while the main window is hidden. Clicking the menu bar icon reopens the window and restores the Dock icon and system menus.

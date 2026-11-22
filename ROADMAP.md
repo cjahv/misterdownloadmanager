@@ -464,6 +464,7 @@ Bug fixes from the first days of 0.5.0, a Safari extension, and more file types.
 
 - ✅ macOS: a layered download icon for the Dock and a compact 13 pt monochrome menu bar icon that follows the system appearance. Options → General can hide the Dock icon and keep the main window accessible from the menu bar.
 - ✅ macOS: the Native appearance groups actions in a compact symbol toolbar, highlights whole categories in the sidebar, and leads the download table with file names and status. Light and dark appearances follow the system accent.
+- ✅ macOS: aligned address and login fields, system choice lists, pointer feedback and standard window closing.
 - ✅ macOS: native command pop-ups, sidebar navigation in Settings and Mac controls in download windows.
 - ✅ macOS: the application commands live in the system menu bar. With the auto-hide option on, the Dock icon follows the main window. A click on the menu bar icon brings the window and system menus back.
 - ✅ A link from the browser no longer ends in 403 where a site refuses the browser's

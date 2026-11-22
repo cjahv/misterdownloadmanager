@@ -860,21 +860,45 @@ impl AddUrl {
             ctx,
             "add-url",
             "Enter new address to download",
-            if mac { [480.0, 136.0] } else { [560.0, 93.0] },
+            if mac { [480.0, 216.0] } else { [560.0, 93.0] },
             false,
             winui::BG(),
             |ui, o| {
                 let p = ui.painter().clone();
-                // i18n: noun: the web address (URL)
-                winui::text(
-                    &p,
-                    o.x + 12.0,
-                    o.y + 25.0,
-                    crate::i18n::t("Address"),
-                    winui::TEXT(),
-                );
-                let addr_rc = r(o, 68.0, 11.0, 396.0, 21.0);
+                let address_label = crate::i18n::t("Address");
+                let login_label = crate::i18n::t("Login");
+                let password_label = crate::i18n::t("Password");
+                let field_x = if mac {
+                    [address_label, login_label, password_label]
+                        .iter()
+                        .map(|s| winui::text_width(&p, s))
+                        .fold(60.0, f32::max)
+                        .min(148.0)
+                        + 28.0
+                } else {
+                    68.0
+                };
+                if mac {
+                    winui::fit(
+                        ui,
+                        &p,
+                        o.x + 16.0,
+                        o.y + 32.0,
+                        address_label,
+                        winui::TEXT(),
+                        o.x + field_x - 10.0,
+                        "address-label",
+                    );
+                } else {
+                    winui::text(&p, o.x + 12.0, o.y + 25.0, address_label, winui::TEXT());
+                }
+                let addr_rc = if mac {
+                    r(o, field_x, 16.0, 464.0 - field_x, 26.0)
+                } else {
+                    r(o, 68.0, 11.0, 396.0, 21.0)
+                };
                 let addr = winui::combo_edit(ui, addr_rc, &mut self.address);
+                winui::name(&addr, address_label);
                 // An error about the address goes once it is edited.
                 if addr.changed() {
                     self.error = None;
@@ -911,26 +935,33 @@ impl AddUrl {
                     )
                 {
                     self.address = self.history[i].clone();
+                    self.error = None;
                     addr.request_focus();
                 }
                 // Enter presses the default button (OK), as in IDM, wherever the focus is.
                 let _ = &addr;
                 let enter = winui::enter_pressed(ui);
 
-                winui::group_box(
-                    &p,
-                    r(o, 11.0, 45.0, 453.0, 40.0),
-                    Some(winui::caption_gap(
+                if !mac {
+                    winui::group_box(
                         &p,
-                        o.x + 20.0,
-                        o.x + 124.0,
-                        "Use authorization",
-                        false,
-                    )),
-                );
+                        r(o, 11.0, 45.0, 453.0, 40.0),
+                        Some(winui::caption_gap(
+                            &p,
+                            o.x + 20.0,
+                            o.x + 124.0,
+                            "Use authorization",
+                            false,
+                        )),
+                    );
+                }
                 winui::checkbox(
                     ui,
-                    o + vec2(20.0, 39.0),
+                    if mac {
+                        o + vec2(field_x, 67.0)
+                    } else {
+                        o + vec2(20.0, 39.0)
+                    },
                     &mut self.auth,
                     "Use authorization",
                     true,
@@ -940,34 +971,40 @@ impl AddUrl {
                 } else {
                     winui::TEXT_DISABLED()
                 };
-                // i18n: noun: the user name and password section
-                winui::text(&p, o.x + 84.0, o.y + 69.0, crate::i18n::t("Login"), label);
-                winui::edit(
-                    ui,
-                    r(o, 116.0, 55.0, 117.0, 23.0),
-                    &mut self.login,
-                    self.auth,
-                    false,
-                );
-                winui::text(
-                    &p,
-                    o.x + 289.0,
-                    o.y + 69.0,
-                    crate::i18n::t("Password"),
-                    label,
-                );
-                winui::edit(
-                    ui,
-                    r(o, 342.0, 55.0, 113.0, 23.0),
-                    &mut self.password,
-                    self.auth,
-                    true,
-                );
+                let (login_rect, password_rect) = if mac {
+                    for (row, caption) in [(94.0, login_label), (128.0, password_label)] {
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + 16.0,
+                            o.y + row + 16.0,
+                            caption,
+                            label,
+                            o.x + field_x - 10.0,
+                            ("auth-label", caption),
+                        );
+                    }
+                    (
+                        r(o, field_x, 94.0, 464.0 - field_x, 26.0),
+                        r(o, field_x, 128.0, 464.0 - field_x, 26.0),
+                    )
+                } else {
+                    winui::text(&p, o.x + 84.0, o.y + 69.0, login_label, label);
+                    winui::text(&p, o.x + 289.0, o.y + 69.0, password_label, label);
+                    (
+                        r(o, 116.0, 55.0, 117.0, 23.0),
+                        r(o, 342.0, 55.0, 113.0, 23.0),
+                    )
+                };
+                let login = winui::edit(ui, login_rect, &mut self.login, self.auth, false);
+                winui::name(&login, login_label);
+                let password = winui::edit(ui, password_rect, &mut self.password, self.auth, true);
+                winui::name(&password, password_label);
 
                 let ok = winui::button(
                     ui,
                     if mac {
-                        r(o, 385.0, 99.0, 79.0, 24.0)
+                        r(o, 385.0, 176.0, 79.0, 24.0)
                     } else {
                         r(o, 475.0, 12.0, 79.0, 19.0)
                     },
@@ -980,7 +1017,7 @@ impl AddUrl {
                 let cancel = winui::button(
                     ui,
                     if mac {
-                        r(o, 298.0, 99.0, 79.0, 24.0)
+                        r(o, 298.0, 176.0, 79.0, 24.0)
                     } else {
                         r(o, 475.0, 40.0, 79.0, 21.0)
                     },
@@ -995,25 +1032,39 @@ impl AddUrl {
                     // Ends before the OK / Cancel buttons; whole on hover when cut.
                     // On the group box's top line, over a strip of the dialog's colour (as a
                     // caption sits on its line), not struck through by it.
-                    let w = winui::text_width(&p, e).min(465.0 - 140.0) + 6.0;
-                    winui::fill_l(
-                        &p,
-                        o.x + 137.0,
-                        o.y + 39.0,
-                        o.x + 137.0 + w,
-                        o.y + 52.0,
-                        winui::BG(),
-                    );
-                    winui::fit(
-                        ui,
-                        &p,
-                        o.x + 140.0,
-                        o.y + 49.0,
-                        e,
-                        red,
-                        o.x + 465.0,
-                        "add-url-error",
-                    );
+                    if mac {
+                        winui::error_frame(&p, addr_rc);
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + field_x,
+                            o.y + 57.0,
+                            e,
+                            red,
+                            o.x + 464.0,
+                            "add-url-error",
+                        );
+                    } else {
+                        let w = winui::text_width(&p, e).min(465.0 - 140.0) + 6.0;
+                        winui::fill_l(
+                            &p,
+                            o.x + 137.0,
+                            o.y + 39.0,
+                            o.x + 137.0 + w,
+                            o.y + 52.0,
+                            winui::BG(),
+                        );
+                        winui::fit(
+                            ui,
+                            &p,
+                            o.x + 140.0,
+                            o.y + 49.0,
+                            e,
+                            red,
+                            o.x + 465.0,
+                            "add-url-error",
+                        );
+                    }
                 }
                 // Escape closes an open drop list first, then the dialog.
                 if cancel || (!list_was_open && winui::escape_pressed(ui)) {

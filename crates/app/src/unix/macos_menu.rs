@@ -83,6 +83,20 @@ impl Handler {
         menu.removeAllItems();
         state.commands.borrow_mut().clear();
         self.fill(menu, &entries);
+        if section == 1 {
+            // With a nil target AppKit sends performClose: to the key window, just like its
+            // red close button. This also preserves the main window's close-to-tray policy.
+            let close = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    self.mtm().alloc(),
+                    &NSString::from_str(i18n::t("Close")),
+                    Some(sel!(performClose:)),
+                    &NSString::from_str("w"),
+                )
+            };
+            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+            menu.addItem(&close);
+        }
         *previous = Some((lang, entries));
     }
 
@@ -264,6 +278,7 @@ impl MacMenu {
                 item.setTitle(&NSString::from_str(i18n::t("Settings...")));
             }
         }
+        super::macos_choices::track(&self.ctx, &ns);
         // Release the application borrow before AppKit starts its tracking loop.
         let popup = app.borrow_mut().take_native_popup();
         if let Some(PopupMenu {

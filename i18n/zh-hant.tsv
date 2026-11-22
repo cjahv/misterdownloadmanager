@@ -4419,6 +4419,7 @@
 #. checkbox in the Options window
 #, machine
 	Show download progress dialog when a download starts	下載開始時顯示下載進度對話方塊
+	Show history	顯示歷史記錄
 #. button in a dialog box
 #. button: shows these downloads in MDM's list, selected
 #, machine

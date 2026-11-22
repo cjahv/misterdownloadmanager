@@ -2086,7 +2086,6 @@
 	Local network: {peers}	Local network: {peers}
 #. text in the Batch download window; text in a dialog box; text in a download's Properties window
 #. noun: the user name for the server (an input box follows)
-#. noun: the user name and password section
 	Login	Login
 #. checkbox in the Options window
 #. Options → Archives → Link grabber check box (IDM's Download all links looks every link up)
@@ -3300,6 +3299,8 @@
 #. text in the Options window
 #. checkbox: a click on MDM's icon in the notification area (system tray) shows a small panel over it with the downloads now running, their progress, Pause and Cancel; unticked, the click shows or hides the main window
 	Show downloads when the notification area icon is clicked	Show downloads when the notification area icon is clicked
+#. text in standard windows
+	Show history	Show history
 #. button in a dialog box
 #. button: shows these downloads in MDM's list, selected
 	Show in list	Show in list
