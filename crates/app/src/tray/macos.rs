@@ -6,14 +6,17 @@ use super::{Menu, Sender, TrayCmd};
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSStatusBar,
-    NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu,
+    NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSPoint, NSSize, NSString};
+use std::cell::Cell;
+use std::time::Instant;
 use tray_icon::menu::ContextMenu;
 
 pub(super) struct State {
     menu: Menu,
+    last_click: Cell<Option<Instant>>,
     tx: Sender<TrayCmd>,
     ctx: egui::Context,
 }
@@ -32,15 +35,21 @@ define_class!(
             let event = NSApplication::sharedApplication(self.mtm()).currentEvent();
             if event.as_ref().is_some_and(|e| e.r#type() == NSEventType::RightMouseUp
                 || e.r#type() == NSEventType::LeftMouseUp && e.modifierFlags().contains(NSEventModifierFlags::Control)) {
+                self.ivars().last_click.set(None);
                 // SAFETY: muda's Menu owns this NSMenu for the lifetime of our action target.
                 let menu = unsafe { &*self.ivars().menu.ns_menu().cast::<NSMenu>() };
                 let y = if button.isFlipped() { button.bounds().size.height } else { 0.0 };
                 menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(0.0,y), Some(button));
             } else {
                 crate::crash::asked();
-                let cmd = if event.as_ref().is_some_and(|e| e.r#type() == NSEventType::LeftMouseUp && e.clickCount() == 2) {
+                // NSStatusBarButton can forward two single actions for a double-click.
+                // Pair actions on this button using the user's system double-click interval.
+                let now = Instant::now();
+                let last = self.ivars().last_click.take();
+                let cmd = if last.is_some_and(|t| now.duration_since(t).as_secs_f64() <= NSEvent::doubleClickInterval()) {
                     TrayCmd::DoubleClick
                 } else {
+                    self.ivars().last_click.set(Some(now));
                     TrayCmd::Click(status_position(button))
                 };
                 let _ = self.ivars().tx.send(cmd);
@@ -78,6 +87,7 @@ impl StatusItem {
         image.setTemplate(true);
         let target = Target::alloc(mtm).set_ivars(State {
             menu,
+            last_click: Cell::new(None),
             tx,
             ctx: ctx.clone(),
         });
