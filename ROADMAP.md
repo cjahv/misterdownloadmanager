@@ -14,6 +14,8 @@ Everything below ships together, in version 0.5.0.
 
 ### Done
 
+- ✅ macOS keeps downloads running when Quit is chosen in the Dock. Exit in the status menu ends the application.
+
 - ✅ Download column filters have stable header targets and keep active criteria visible in the macOS Native theme.
 
 - ✅ Menus on compositors that animate windows (Hyprland): no border and no slide-in, and going from

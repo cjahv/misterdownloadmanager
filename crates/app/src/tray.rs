@@ -916,7 +916,7 @@ mod tests {
                     on_close(false, false, tray, icon, true, true),
                     OnClose::Quit
                 );
-                // Cmd+Q, MDM → Quit, Exit when done: quits.
+                // The status item's Exit and Exit when done quit.
                 assert_eq!(on_close(true, true, tray, icon, true, true), OnClose::Quit);
             }
         }

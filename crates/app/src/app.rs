@@ -4885,7 +4885,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         #[cfg(target_os = "macos")]
-        if self.settings.hide_dock_icon && !crate::offscreen() {
+        if !crate::offscreen() {
             crate::unix::macos_show_main_window();
         }
         crate::dialogs::focus(ctx, egui::ViewportId::ROOT);
@@ -5139,7 +5139,9 @@ impl App {
             tracing::info!("tray: {c:?}");
             let cmd = match c {
                 #[cfg(target_os = "macos")]
-                TrayCmd::Click(_) if self.dock_hidden => {
+                TrayCmd::Click(_)
+                    if self.dock_hidden || self.hidden || crate::unix::macos_app_hidden() =>
+                {
                     self.tray_panel = None;
                     self.show_window(ctx);
                     continue;
@@ -5214,7 +5216,7 @@ impl App {
         // off, no tray at all, or Linux with no tray host (#59: a hidden window couldn't come
         // back, and one that merely minimized could never be closed). macOS (#1125): the window
         // closes into the Dock, as Mac apps' do, and a click on MDM's icon there brings it back.
-        // Asked to quit (`quit`: File → Exit, Cmd+Q, MDM → Quit, Exit when done…), the close quits
+        // Asked to quit (`quit`: the status menu’s Exit, /exit, Exit when done…), the close quits
         // whatever the option.
         if ctx.input(|i| i.viewport().close_requested()) {
             use crate::tray::OnClose;
@@ -8780,7 +8782,7 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             Cmd::HideApplication => {
-                if self.can_hide_dock() && crate::unix::macos_only_main_window_visible() {
+                if crate::unix::macos_only_main_window_visible() {
                     self.hide_to_tray(ctx);
                     ctx.request_repaint();
                 } else {
@@ -9398,7 +9400,9 @@ impl App {
                         ),
                     ],
                 ),
+                #[cfg(not(target_os = "macos"))]
                 Sep,
+                #[cfg(not(target_os = "macos"))]
                 I("&Exit", Cmd::Exit, true, false),
             ],
             1 => vec![
@@ -13742,15 +13746,14 @@ impl App {
 impl Drop for App {
     /// Exit, a closed window that quits, a headless run's end: [`App::finish`].
     fn drop(&mut self) {
-        // macOS ends the program right after this when it quits MDM itself (Cmd+Q, MDM → Quit,
-        // the Dock's Quit, logging out): eframe drops the app on the way, and `main` never
-        // gets its turn to say the exit was clean (#1125).
+        // macOS can end the process here at logout. eframe drops the app on the way,
+        // before main can mark this as a clean exit (#1125).
         #[cfg(target_os = "macos")]
         let by_the_system = !self.exiting;
         self.finish(None);
         #[cfg(target_os = "macos")]
         if by_the_system {
-            tracing::info!("quit by macOS (Cmd+Q, the menu's or the Dock's Quit, logging out)");
+            tracing::info!("quit by macOS (external termination or end of session)");
             crate::crash::clean_exit();
         }
     }

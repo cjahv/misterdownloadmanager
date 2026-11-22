@@ -8,11 +8,16 @@ use crate::{chrome, i18n};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSMenu, NSMenuDelegate, NSMenuItem};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSString};
+use objc2_app_kit::{NSApplication, NSMenu, NSMenuDelegate, NSMenuItem, NSRunningApplication};
+use objc2_foundation::{
+    NSAppleEventDescriptor, NSAppleEventManager, NSObject, NSObjectProtocol, NSPoint, NSString,
+};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{self, Receiver, Sender};
+
+const CORE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
+const QUIT_EVENT: u32 = u32::from_be_bytes(*b"quit");
 
 type MenuSnapshot = (&'static str, Vec<MenuEntry<Cmd>>);
 
@@ -49,18 +54,51 @@ define_class!(
         }
     }
     impl Handler {
+        #[unsafe(method(mdmQuitEvent:reply:))]
+        fn quit_event(&self, event: &NSAppleEventDescriptor, reply: &NSAppleEventDescriptor) {
+            // keySenderPIDAttr is supplied by the system. Only the Dock's interactive Quit
+            // becomes Hide. Let AppKit finish logouts, updates and other termination requests.
+            let pid: Option<Retained<NSAppleEventDescriptor>> = unsafe {
+                msg_send![event, attributeDescriptorForKeyword: u32::from_be_bytes(*b"spid")]
+            };
+            let sender = pid.and_then(|pid| NSRunningApplication::runningApplicationWithProcessIdentifier(pid.int32Value()))
+                .and_then(|app| app.bundleIdentifier());
+            let reason: Option<Retained<NSAppleEventDescriptor>> = unsafe {
+                msg_send![event, paramDescriptorForKeyword: u32::from_be_bytes(*b"why?")]
+            };
+            if reason.is_none() && sender.is_some_and(|id| id.isEqualToString(objc2_foundation::ns_string!("com.apple.dock"))) {
+                self.dispatch(Cmd::HideApplication);
+                // Report userCanceledErr to the requester: the process is intentionally alive.
+                // typeNull means the Dock did not request a reply.
+                let kind: u32 = unsafe { msg_send![reply, descriptorType] };
+                if kind != u32::from_be_bytes(*b"null") {
+                    let cancelled = NSAppleEventDescriptor::descriptorWithInt32(-128);
+                    unsafe {
+                        let _: () = msg_send![reply, setParamDescriptor: &*cancelled, forKeyword: u32::from_be_bytes(*b"errn")];
+                    }
+                }
+            } else {
+                NSApplication::sharedApplication(self.mtm()).terminate(None);
+            }
+        }
+
         #[unsafe(method(mdmChoose:))]
         fn choose(&self, sender: &NSMenuItem) {
             let state = self.ivars();
             if let Some(cmd) = state.commands.borrow().get(sender.tag() as usize) {
-                let _ = state.send.send((*cmd, state.target));
-                state.ctx.request_repaint();
+                self.dispatch(*cmd);
             }
         }
     }
 );
 
 impl Handler {
+    fn dispatch(&self, cmd: Cmd) {
+        let state = self.ivars();
+        let _ = state.send.send((cmd, state.target));
+        state.ctx.request_ui_pass(egui::ViewportId::ROOT);
+    }
+
     fn refresh(&self, menu: &NSMenu) {
         let state = self.ivars();
         let Some(app) = state.app.upgrade() else {
@@ -120,7 +158,7 @@ impl Handler {
     fn fill(&self, menu: &NSMenu, entries: &[MenuEntry<Cmd>]) {
         let mtm = self.mtm();
         menu.setAutoenablesItems(false);
-        // Delay a separator so moving Settings and Quit to the app menu leaves no trailing rule.
+        // Delay a separator so moving Settings to the app menu leaves no trailing rule.
         let mut divider = false;
         for entry in entries {
             let item = match entry {
@@ -128,9 +166,7 @@ impl Handler {
                     divider = menu.numberOfItems() > 0;
                     continue;
                 }
-                MenuEntry::Item(_, Cmd::Exit | Cmd::Options, ..)
-                    if self.ivars().section.is_some() =>
-                {
+                MenuEntry::Item(_, Cmd::Options, ..) if self.ivars().section.is_some() => {
                     continue;
                 }
                 MenuEntry::Item(label, cmd, enabled, checked)
@@ -238,21 +274,26 @@ impl MacMenu {
                 return;
             };
             let handler = self.handler(mtm, None, None);
-            // Keep the system's Hide label and shortcut. With one main window the command
-            // can use the same background transition as closing into the status item.
-            if let Some(hide) = application
-                .itemArray()
-                .iter()
-                .find(|i| i.action() == Some(sel!(hide:)))
-            {
+            // The app menu and its shortcuts use the same hide path as the Dock's Quit.
+            // The status item's Exit is a separate tray command and still calls App::quit.
+            for item in application.itemArray().iter().filter(|item| {
+                matches!(item.action(), Some(action) if action == sel!(hide:) || action == sel!(terminate:))
+            }) {
                 let mut commands = handler.ivars().commands.borrow_mut();
-                hide.setTag(commands.len() as isize);
+                item.setTag(commands.len() as isize);
                 commands.push(Cmd::HideApplication);
-                // SAFETY: this handler implements mdmChoose: and lives with the menu.
+                // SAFETY: handler implements the selector and lives with the application's menu.
                 unsafe {
-                    hide.setAction(Some(sel!(mdmChoose:)));
-                    hide.setTarget(Some(&*handler));
+                    item.setAction(Some(sel!(mdmChoose:)));
+                    item.setTarget(Some(&*handler));
                 }
+            }
+            // SAFETY: the two-argument Apple event selector is implemented above. Drop
+            // unregisters it before releasing the handler.
+            unsafe {
+                let _: () = msg_send![&*NSAppleEventManager::sharedAppleEventManager(),
+                    setEventHandler: &*handler, andSelector: sel!(mdmQuitEvent:reply:),
+                    forEventClass: CORE_EVENT, andEventID: QUIT_EVENT];
             }
             let settings = handler.item(i18n::t("Settings..."), ",", Cmd::Options);
             application.insertItem_atIndex(&settings, 1.min(application.numberOfItems()));
@@ -309,6 +350,18 @@ impl MacMenu {
         for (cmd, target) in self.receive.try_iter() {
             app.borrow_mut().run(cmd, target, &self.ctx);
             self.ctx.request_ui_pass(egui::ViewportId::ROOT);
+        }
+    }
+}
+
+impl Drop for MacMenu {
+    fn drop(&mut self) {
+        if self.settings.is_some() {
+            // SAFETY: remove the exact class and event installed in tick.
+            unsafe {
+                let _: () = msg_send![&*NSAppleEventManager::sharedAppleEventManager(),
+                    removeEventHandlerForEventClass: CORE_EVENT, andEventID: QUIT_EVENT];
+            }
         }
     }
 }

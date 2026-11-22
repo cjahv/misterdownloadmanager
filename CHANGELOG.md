@@ -7,6 +7,8 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ### Added
 
+- On macOS, choosing Quit in the Dock or the application menu (⌘Q) hides the window while downloads continue. Click the status icon to reopen the window, or choose Exit in its menu to quit.
+
 - The macOS Native download table shows the Queue title and gives its column filter a dedicated target. Clicking the same filter closes its panel even at the window edge.
 
 - macOS form fields have a continuous focus ring. History and fixed-choice menus use AppKit, and ⌘W closes the front window. Add URL aligns the address and authorization fields in one column.
